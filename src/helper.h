@@ -7,7 +7,6 @@
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 
-struct ndp_msg;
 
 #define DHCPV6_TRANSACTION_ID_LEN 3U
 #define NDP_OPTION_LEN_UNIT_OCTETS 8U
@@ -42,7 +41,7 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
 int locate_ipv6(const uint8_t *packet, size_t packet_len,
 		size_t *ipv6_offset, size_t *ipv6_len);
 
-int validate_nd_options(struct ndp_msg *msg);
+int validate_nd_options(const uint8_t *options, size_t options_len);
 uint16_t icmpv6_checksum(const struct ip6_hdr *ip6h,
 			 const uint8_t *icmp, size_t icmp_len);
 

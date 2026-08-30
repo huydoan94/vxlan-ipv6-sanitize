@@ -15,7 +15,6 @@
 #include <unistd.h>
 
 #include <linux/if_ether.h>
-#include <ndp.h>
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
@@ -216,10 +215,10 @@ int locate_ipv6(const uint8_t *packet, size_t packet_len,
 	return 0;
 }
 
-int validate_nd_options(struct ndp_msg *msg)
+int validate_nd_options(const uint8_t *options, size_t options_len)
 {
-	const uint8_t *ptr = ndp_msg_payload_opts(msg);
-	size_t remaining = ndp_msg_payload_opts_len(msg);
+	const uint8_t *ptr = options;
+	size_t remaining = options_len;
 
 	while (remaining > 0) {
 		const struct nd_option_header_wire *header;

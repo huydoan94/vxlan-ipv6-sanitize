@@ -1,4 +1,4 @@
-# vxlan-ipv6-sanitize 1.2.3
+# vxlan-ipv6-sanitize 1.2.4
 
 Low-memory C NFQUEUE sanitizer for IPv6 configuration traffic received from
 VXLAN bridge ports on OpenWrt.
@@ -70,11 +70,6 @@ for a ULA (`fc00::/7`).
   - UDP header/payload validation helpers
   - DHCPv6 DNS payload mangling
   - UDP/IPv6 checksum recalculation
-- `libndp`:
-  - Router Advertisement typed Router Lifetime access
-  - Neighbor Discovery option discovery
-  - RDNSS option/address iteration
-
 OpenWrt 25.12 carries libnetfilter_queue 1.0.5 and a modern nftables/kernel
 stack suitable for this implementation.
 
@@ -86,12 +81,13 @@ stack suitable for this implementation.
 
 ## Small manual surface that remains
 
-There is no suitable lightweight DHCPv6 C parser library in the OpenWrt runtime
-set, and libnetfilter_queue has no public ICMPv6 checksum helper.  The daemon
-therefore retains only:
+There is no suitable lightweight DHCPv6 parser in the OpenWrt runtime set, and
+OpenWrt's `libndp` package does not stage its development header/library for
+dependent package builds.  The daemon therefore parses only the small protocol
+surface it actually modifies:
 
 - a small Ethernet/VLAN-to-IPv6 locator for bridge-family NFQUEUE payloads;
-- generic ND-option structural validation before libndp iteration;
+- a bounds-checked Router Advertisement option iterator for RDNSS;
 - the top-level DHCPv6 TLV iterator for Client ID and option 23;
 - one ICMPv6 checksum routine for Router Advertisements;
 - ingress-interface/bridge-master ULA discovery.

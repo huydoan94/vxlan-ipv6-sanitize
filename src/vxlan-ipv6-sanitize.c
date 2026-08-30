@@ -26,7 +26,6 @@
 #include <libnetfilter_queue/libnetfilter_queue_ipv6.h>
 #include <libnetfilter_queue/pktbuff.h>
 #include <libnetfilter_queue/libnetfilter_queue_udp.h>
-#include <ndp.h>
 
 #include "helper.h"
 #include "logging.h"
@@ -41,6 +40,7 @@
 #define ND_ROUTER_ADVERT_REQUIRED_HOP_LIMIT UINT8_MAX
 #define ND_ROUTER_ADVERT_CODE 0U
 #define RA_NEUTRAL_ROUTER_LIFETIME 0U
+#define ND_OPTION_RDNSS 25U /* RFC 8106 Recursive DNS Server option. */
 
 #define DHCPV6_SERVER_PORT 547U
 #define DHCPV6_CLIENT_PORT 546U
@@ -67,7 +67,6 @@ struct dhcpv6_option_header_wire {
 
 struct app_ctx {
 	bool verbose;
-	struct ndp_msg *ra_msg;
 };
 
 static volatile sig_atomic_t running = 1;
@@ -99,23 +98,25 @@ static int install_signal_handlers(void)
  * Return 1 when changed, 0 when this is not a supported RA or no change is
  * required, and -1 for a malformed RA that must be accepted unchanged.
  */
-static int sanitize_ra(struct app_ctx *ctx, struct pkt_buff *pktb,
-		       struct ip6_hdr *ip6h, const struct in6_addr *local_dns,
+static int sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
+		       const struct in6_addr *local_dns,
 		       const char *endpoints,
 		       char *detail, size_t detail_len,
 		       char *error, size_t error_len)
 {
 	struct icmphdr *generic_icmp;
-	struct ndp_msgra *ra;
+	struct nd_router_advert *ra;
 	uint8_t *icmp_bytes;
+	uint8_t *opts;
 	size_t icmp_offset;
 	size_t icmp_len;
+	size_t opts_len;
+	size_t opt_offset;
 	uint16_t original_lifetime;
 	unsigned int rewritten = 0;
 	bool changed = false;
 	struct addr_list original_rdnss;
 	struct addr_list modified_rdnss;
-	int opt_offset;
 
 	if (!nfq_ip6_set_transport_header(pktb, ip6h, IPPROTO_ICMPV6))
 		return 0;
@@ -146,77 +147,56 @@ static int sanitize_ra(struct app_ctx *ctx, struct pkt_buff *pktb,
 		return -1;
 	}
 
-	if (icmp_len > ndp_msg_payload_maxlen(ctx->ra_msg)) {
-		set_error(error, error_len,
-			  "RA length %zu exceeds libndp buffer %zu",
-			  icmp_len, ndp_msg_payload_maxlen(ctx->ra_msg));
-		return -1;
-	}
+	ra = (struct nd_router_advert *)icmp_bytes;
+	opts = icmp_bytes + sizeof(*ra);
+	opts_len = icmp_len - sizeof(*ra);
 
-	/*
-	 * Seed a reusable libndp RA object with an exact private copy of the
-	 * received ICMPv6 message. libndp then owns typed RA lifetime access and
-	 * RDNSS option discovery; no RA is serialized or reconstructed.
-	 */
-	memcpy(ndp_msg_payload(ctx->ra_msg), icmp_bytes, icmp_len);
-	ndp_msg_payload_len_set(ctx->ra_msg, icmp_len);
-
-	if (validate_nd_options(ctx->ra_msg) < 0) {
+	if (validate_nd_options(opts, opts_len) < 0) {
 		set_error(error, error_len, "malformed RA option stream");
 		return -1;
 	}
 
-	ra = ndp_msgra(ctx->ra_msg);
-	if (ra == NULL) {
-		set_error(error, error_len, "libndp did not recognize Router Advertisement");
-		return -1;
-	}
-
-	original_lifetime = ndp_msgra_router_lifetime(ra);
+	original_lifetime = ntohs(ra->nd_ra_router_lifetime);
 	if (original_lifetime != RA_NEUTRAL_ROUTER_LIFETIME) {
-		ndp_msgra_router_lifetime_set(ra, RA_NEUTRAL_ROUTER_LIFETIME);
+		ra->nd_ra_router_lifetime = htons(RA_NEUTRAL_ROUTER_LIFETIME);
 		changed = true;
 	}
 
 	addr_list_init(&original_rdnss);
 	addr_list_init(&modified_rdnss);
 
-	ndp_msg_opt_for_each_offset(opt_offset, ctx->ra_msg, NDP_MSG_OPT_RDNSS) {
-		uint8_t *opts = ndp_msg_payload_opts(ctx->ra_msg);
-		size_t opts_len = ndp_msg_payload_opts_len(ctx->ra_msg);
+	for (opt_offset = 0; opt_offset < opts_len; ) {
 		struct nd_option_header_wire *header;
-		uint8_t *opt;
+		uint8_t *opt = opts + opt_offset;
 		size_t opt_len;
 		const size_t fixed_len = offsetof(struct rdnss_option_wire, addresses);
 		const size_t minimum_len = fixed_len + sizeof(struct in6_addr);
-		int addr_index;
-		struct in6_addr *addr;
+		size_t addr_offset;
 
-		if (opt_offset < 0 ||
-		    (size_t)opt_offset + sizeof(*header) > opts_len) {
-			set_error(error, error_len, "invalid libndp RDNSS offset");
-			return -1;
-		}
-
-		opt = opts + opt_offset;
 		header = (struct nd_option_header_wire *)opt;
 		opt_len = (size_t)header->length_units * NDP_OPTION_LEN_UNIT_OCTETS;
 
+		if (header->type != ND_OPTION_RDNSS) {
+			opt_offset += opt_len;
+			continue;
+		}
+
 		/* RFC 8106: fixed fields followed by one or more IPv6 addresses. */
 		if (opt_len < minimum_len ||
-		    (size_t)opt_offset + opt_len > opts_len ||
 		    (opt_len - fixed_len) % sizeof(struct in6_addr) != 0) {
 			set_error(error, error_len,
 				  "invalid RDNSS option length %zu", opt_len);
 			return -1;
 		}
 
-		ndp_msg_opt_rdnss_for_each_addr(addr, addr_index,
-						ctx->ra_msg, opt_offset) {
-			uint8_t *wire_addr = opt + fixed_len +
-				(size_t)addr_index * sizeof(struct in6_addr);
+		for (addr_offset = fixed_len;
+		     addr_offset < opt_len;
+		     addr_offset += sizeof(struct in6_addr)) {
+			struct in6_addr old_addr;
+			uint8_t *wire_addr = opt + addr_offset;
 
-			addr_list_append(&original_rdnss, addr);
+			memcpy(&old_addr, wire_addr, sizeof(old_addr));
+			addr_list_append(&original_rdnss, &old_addr);
 
 			if (memcmp(wire_addr, local_dns, sizeof(*local_dns)) != 0) {
 				memcpy(wire_addr, local_dns, sizeof(*local_dns));
@@ -226,17 +206,16 @@ static int sanitize_ra(struct app_ctx *ctx, struct pkt_buff *pktb,
 
 			addr_list_append(&modified_rdnss, local_dns);
 		}
+
+		opt_offset += opt_len;
 	}
 
 	if (!changed)
 		return 0;
 
-	/* Copy the exact libndp private message back, then update only checksum. */
-	memcpy(icmp_bytes, ndp_msg_payload(ctx->ra_msg), icmp_len);
 	/* Recalculate the checksum after the in-place RA modifications. */
-	write_be16(icmp_bytes + offsetof(struct icmp6_hdr, icmp6_cksum), 0);
-	write_be16(icmp_bytes + offsetof(struct icmp6_hdr, icmp6_cksum),
-		   icmpv6_checksum(ip6h, icmp_bytes, icmp_len));
+	ra->nd_ra_cksum = 0;
+	ra->nd_ra_cksum = htons(icmpv6_checksum(ip6h, icmp_bytes, icmp_len));
 
 	format_ra_log_detail(detail, detail_len, endpoints, original_lifetime,
 			     RA_NEUTRAL_ROUTER_LIFETIME, &original_rdnss,
@@ -527,7 +506,7 @@ static int packet_cb(struct nfq_q_handle *qh,
 	if (inet_ntop(AF_INET6, &local_dns, dns_buf, sizeof(dns_buf)) == NULL)
 		snprintf(dns_buf, sizeof(dns_buf), "?");
 
-	changed = sanitize_ra(ctx, pktb, ip6h, &local_dns,
+	changed = sanitize_ra(pktb, ip6h, &local_dns,
 			      endpoints, detail, sizeof(detail),
 			      error, sizeof(error));
 	if (changed == 0) {
@@ -602,22 +581,17 @@ int main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	if (ndp_msg_new(&ctx.ra_msg, NDP_MSG_RA) < 0) {
-		log_error("ndp_msg_new(NDP_MSG_RA) failed");
-		return EXIT_FAILURE;
-	}
-
 	if (install_signal_handlers() < 0) {
 		log_error("failed to install signal handlers: %s", strerror(errno));
 		exit_status = EXIT_FAILURE;
-		goto out_ndp;
+		goto out;
 	}
 
 	h = nfq_open();
 	if (h == NULL) {
 		log_error("nfq_open() failed");
 		exit_status = EXIT_FAILURE;
-		goto out_ndp;
+		goto out;
 	}
 
 	qh = nfq_create_queue(h, QUEUE_NUM, &packet_cb, &ctx);
@@ -708,7 +682,6 @@ out_queue:
 out_nfq:
 	if (h != NULL)
 		nfq_close(h);
-out_ndp:
-	ndp_msg_destroy(ctx.ra_msg);
+out:
 	return exit_status;
 }

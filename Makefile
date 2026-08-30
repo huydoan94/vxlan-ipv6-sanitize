@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.3
+PKG_VERSION:=1.2.4
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -13,7 +13,7 @@ define Package/vxlan-ipv6-sanitize
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=VXLAN IPv6 RA/DHCPv6 sanitizer
-	DEPENDS:=+firewall4 +kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge +libnetfilter-queue +libndp
+	DEPENDS:=+firewall4 +kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge +libnetfilter-queue
 endef
 
 define Package/vxlan-ipv6-sanitize/description
@@ -46,7 +46,7 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/helper.c \
 		$(PKG_BUILD_DIR)/logging.c \
 		$(TARGET_LDFLAGS) \
-		-lnetfilter_queue -lndp
+		-lnetfilter_queue
 endef
 
 define Package/vxlan-ipv6-sanitize/install
