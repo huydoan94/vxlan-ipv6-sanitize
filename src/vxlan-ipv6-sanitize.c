@@ -7,7 +7,6 @@
 #include <netinet/icmp6.h>
 #include <netinet/in.h>
 #include <netinet/ip6.h>
-#include <netinet/ip_icmp.h>
 #include <netinet/udp.h>
 #include <poll.h>
 #include <signal.h>
@@ -22,7 +21,6 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
-#include <libnetfilter_queue/libnetfilter_queue_icmp.h>
 #include <libnetfilter_queue/libnetfilter_queue_ipv6.h>
 #include <libnetfilter_queue/pktbuff.h>
 #include <libnetfilter_queue/libnetfilter_queue_udp.h>
@@ -104,7 +102,6 @@ static int sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 		       char *detail, size_t detail_len,
 		       char *error, size_t error_len)
 {
-	struct icmphdr *generic_icmp;
 	struct nd_router_advert *ra;
 	uint8_t *icmp_bytes;
 	uint8_t *opts;
@@ -121,11 +118,10 @@ static int sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	if (!nfq_ip6_set_transport_header(pktb, ip6h, IPPROTO_ICMPV6))
 		return 0;
 
-	generic_icmp = nfq_icmp_get_hdr(pktb);
-	if (generic_icmp == NULL)
+	icmp_bytes = pktb_transport_header(pktb);
+	if (icmp_bytes == NULL)
 		return 0;
 
-	icmp_bytes = (uint8_t *)generic_icmp;
 	icmp_offset = (size_t)(icmp_bytes - (uint8_t *)pktb_data(pktb));
 	if (icmp_offset > pktb_len(pktb))
 		return 0;
@@ -136,8 +132,9 @@ static int sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 		return -1;
 	}
 
-	if (generic_icmp->type != ND_ROUTER_ADVERT ||
-	    generic_icmp->code != ND_ROUTER_ADVERT_CODE)
+	ra = (struct nd_router_advert *)icmp_bytes;
+	if (ra->nd_ra_type != ND_ROUTER_ADVERT ||
+	    ra->nd_ra_code != ND_ROUTER_ADVERT_CODE)
 		return 0;
 
 	if (ip6h->ip6_hlim != ND_ROUTER_ADVERT_REQUIRED_HOP_LIMIT) {
@@ -147,7 +144,6 @@ static int sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 		return -1;
 	}
 
-	ra = (struct nd_router_advert *)icmp_bytes;
 	opts = icmp_bytes + sizeof(*ra);
 	opts_len = icmp_len - sizeof(*ra);
 
@@ -287,9 +283,8 @@ static int sanitize_dhcpv6(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	addr_list_init(&modified_dns);
 
 	/*
-	 * DHCPv6 has no lightweight parser library in the OpenWrt base/packages
-	 * set. Keep one bounds-checked top-level TLV pass. Nested IA_NA/IAADDR and
-	 * all unknown options remain opaque and byte-for-byte untouched.
+	 * Keep one bounds-checked top-level DHCPv6 TLV pass. Nested IA_NA/IAADDR
+	 * and all unknown options remain opaque and byte-for-byte untouched.
 	 */
 	offset = sizeof(struct dhcpv6_direct_header_wire);
 	while (offset < dhcp_len) {
@@ -604,7 +599,7 @@ int main(int argc, char **argv)
 	/*
 	 * nft's `queue ... bypass` only handles the no-listener case.  A full
 	 * kernel NFQUEUE is dropped by default, so explicitly enable the kernel
-	 * fail-open flag as well.  OpenWrt 25.12 kernels support this flag.
+	 * fail-open flag as well.
 	 */
 	if (nfq_set_queue_flags(qh, NFQA_CFG_F_FAIL_OPEN,
 				NFQA_CFG_F_FAIL_OPEN) < 0) {

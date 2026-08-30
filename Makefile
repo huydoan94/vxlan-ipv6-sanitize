@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.4
+PKG_VERSION:=1.2.5
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -28,7 +28,7 @@ define Package/vxlan-ipv6-sanitize/conffiles
 endef
 
 TARGET_CFLAGS += -Os -Wall -Wextra -Wformat=2 -Wshadow -Wstrict-prototypes \
-	-ffunction-sections -fdata-sections
+	-Werror=implicit-function-declaration -ffunction-sections -fdata-sections
 TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Build/Prepare

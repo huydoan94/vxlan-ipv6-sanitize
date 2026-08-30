@@ -33,8 +33,6 @@ enum dhcpv6_message_type {
 };
 
 uint16_t read_be16(const uint8_t *p);
-void write_be16(uint8_t *p, uint16_t value);
-
 int resolve_local_dns(uint32_t indev, uint32_t physindev,
 		      struct in6_addr *dns,
 		      char *source_ifname, size_t source_ifname_len);

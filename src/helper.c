@@ -6,7 +6,6 @@
 #include <ifaddrs.h>
 #include <limits.h>
 #include <net/if.h>
-#include <netinet/icmp6.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -18,6 +17,8 @@
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
+#define IPV6_WIRE_VERSION 6U
+#define IPV6_VERSION_FIELD_BITS 4U
 #define IPV6_ULA_PREFIX_MASK 0xfeU
 #define IPV6_ULA_PREFIX_VALUE 0xfcU
 #define IPV6_PSEUDO_RESERVED_LEN 3U
@@ -42,13 +43,6 @@ uint16_t read_be16(const uint8_t *p)
 
 	memcpy(&network_value, p, sizeof(network_value));
 	return ntohs(network_value);
-}
-
-void write_be16(uint8_t *p, uint16_t value)
-{
-	uint16_t network_value = htons(value);
-
-	memcpy(p, &network_value, sizeof(network_value));
 }
 
 static bool is_ula(const struct in6_addr *addr)
@@ -156,7 +150,9 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
  */
 static bool has_ipv6_version(const uint8_t *packet)
 {
-	return (packet[0] & IPV6_VERSION_MASK) == IPV6_VERSION;
+	const unsigned int version_shift = CHAR_BIT - IPV6_VERSION_FIELD_BITS;
+
+	return (packet[0] >> version_shift) == IPV6_WIRE_VERSION;
 }
 
 static bool is_vlan_ethertype(uint16_t ethertype)
