@@ -1,4 +1,4 @@
-# vxlan-ipv6-sanitize 1.2.1
+# vxlan-ipv6-sanitize 1.2.2
 
 Low-memory C NFQUEUE sanitizer for IPv6 configuration traffic received from
 VXLAN bridge ports on OpenWrt.
@@ -77,6 +77,12 @@ for a ULA (`fc00::/7`).
 
 OpenWrt 25.12 carries libnetfilter_queue 1.0.5 and a modern nftables/kernel
 stack suitable for this implementation.
+
+## Source layout
+
+- `vxlan-ipv6-sanitize.c`: daemon lifecycle, NFQUEUE callback, and RA/DHCPv6 sanitizers
+- `helper.c` / `helper.h`: reusable packet, address, formatting, and checksum helpers
+- `logging.c` / `logging.h`: verbose/error logging and error-string formatting
 
 ## Small manual surface that remains
 

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.1
+PKG_VERSION:=1.2.2
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -43,6 +43,8 @@ define Build/Compile
 		$(TARGET_CPPFLAGS) \
 		-o $(PKG_BUILD_DIR)/vxlan-ipv6-sanitize \
 		$(PKG_BUILD_DIR)/vxlan-ipv6-sanitize.c \
+		$(PKG_BUILD_DIR)/helper.c \
+		$(PKG_BUILD_DIR)/logging.c \
 		$(TARGET_LDFLAGS) \
 		-lnetfilter_queue -lndp
 endef
