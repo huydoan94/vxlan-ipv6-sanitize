@@ -14,36 +14,19 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <linux/if_ether.h>
 #include <ndp.h>
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
-#define DUID_LLT 1U
-#define DUID_LL 3U
-#define HWTYPE_ETHERNET 1U
 #define IPV6_ULA_PREFIX_MASK 0xfeU
 #define IPV6_ULA_PREFIX_VALUE 0xfcU
 #define IPV6_PSEUDO_RESERVED_LEN 3U
 #define SYSFS_LINK_BUFSIZE 256U
-#define DESTINATION_TEXT_BUFSIZE \
-	(INET6_ADDRSTRLEN + sizeof("(all-dhcp-agents)"))
 
 struct vlan_tag_wire {
 	uint16_t tci;
 	uint16_t encapsulated_proto;
-} __attribute__((packed));
-
-struct duid_llt_ethernet_wire {
-	uint16_t type;
-	uint16_t hardware_type;
-	uint32_t time;
-	uint8_t mac[ETH_ALEN];
-} __attribute__((packed));
-
-struct duid_ll_ethernet_wire {
-	uint16_t type;
-	uint16_t hardware_type;
-	uint8_t mac[ETH_ALEN];
 } __attribute__((packed));
 
 struct ipv6_pseudo_header {
@@ -60,17 +43,6 @@ uint16_t read_be16(const uint8_t *p)
 
 	memcpy(&network_value, p, sizeof(network_value));
 	return ntohs(network_value);
-}
-
-uint32_t read_be24(const uint8_t *p)
-{
-	uint32_t value = 0;
-	size_t i;
-
-	for (i = 0; i < DHCPV6_TRANSACTION_ID_LEN; i++)
-		value = (value << CHAR_BIT) | p[i];
-
-	return value;
 }
 
 void write_be16(uint8_t *p, uint16_t value)
@@ -144,8 +116,8 @@ static int find_ula_on_interface(const char *ifname, struct in6_addr *result)
 }
 
 int resolve_local_dns(uint32_t indev, uint32_t physindev,
-			     struct in6_addr *dns,
-			     char *source_ifname, size_t source_ifname_len)
+		      struct in6_addr *dns,
+		      char *source_ifname, size_t source_ifname_len)
 {
 	char ifname[IF_NAMESIZE];
 	char master[IF_NAMESIZE];
@@ -196,7 +168,7 @@ static bool is_vlan_ethertype(uint16_t ethertype)
 }
 
 int locate_ipv6(const uint8_t *packet, size_t packet_len,
-		       size_t *ipv6_offset, size_t *ipv6_len)
+		size_t *ipv6_offset, size_t *ipv6_len)
 {
 	const size_t ethernet_proto_offset = offsetof(struct ethhdr, h_proto);
 	const size_t vlan_proto_offset =
@@ -242,210 +214,6 @@ int locate_ipv6(const uint8_t *packet, size_t packet_len,
 
 	*ipv6_offset = off;
 	return 0;
-}
-
-static void format_mac(const uint8_t *mac, char *buf, size_t len)
-{
-	size_t i;
-	size_t used = 0;
-
-	if (len == 0)
-		return;
-
-	buf[0] = '\0';
-	for (i = 0; i < ETH_ALEN; i++) {
-		int written = snprintf(buf + used, len - used, "%s%02x",
-				       i == 0 ? "" : ":", mac[i]);
-
-		if (written < 0 || (size_t)written >= len - used)
-			return;
-		used += (size_t)written;
-	}
-}
-
-static bool ipv6_equals_literal(const struct in6_addr *addr,
-				const char *literal)
-{
-	struct in6_addr expected;
-
-	if (inet_pton(AF_INET6, literal, &expected) != 1)
-		return false;
-
-	return memcmp(addr, &expected, sizeof(expected)) == 0;
-}
-
-static void format_destination(const struct in6_addr *addr,
-			       char *buf, size_t len)
-{
-	static const char all_nodes[] = "ff02::1";
-	static const char all_dhcp_agents[] = "ff02::1:2";
-	char ip[INET6_ADDRSTRLEN];
-
-	if (inet_ntop(AF_INET6, addr, ip, sizeof(ip)) == NULL)
-		snprintf(ip, sizeof(ip), "?");
-
-	if (ipv6_equals_literal(addr, all_nodes))
-		snprintf(buf, len, "%s(all-nodes)", ip);
-	else if (ipv6_equals_literal(addr, all_dhcp_agents))
-		snprintf(buf, len, "%s(all-dhcp-agents)", ip);
-	else
-		snprintf(buf, len, "%s", ip);
-}
-
-void format_endpoints(const uint8_t *packet, size_t packet_len,
-			     size_t ipv6_offset, const struct ip6_hdr *ip6h,
-			     char *buf, size_t len)
-{
-	char src[INET6_ADDRSTRLEN];
-	char dst[DESTINATION_TEXT_BUFSIZE];
-
-	if (inet_ntop(AF_INET6, &ip6h->ip6_src, src, sizeof(src)) == NULL)
-		snprintf(src, sizeof(src), "?");
-	format_destination(&ip6h->ip6_dst, dst, sizeof(dst));
-
-	if (ipv6_offset >= sizeof(struct ethhdr) &&
-	    packet_len >= sizeof(struct ethhdr)) {
-		char src_mac[MAC_TEXT_BUFSIZE];
-		char dst_mac[MAC_TEXT_BUFSIZE];
-
-		format_mac(packet + offsetof(struct ethhdr, h_source),
-			   src_mac, sizeof(src_mac));
-		format_mac(packet + offsetof(struct ethhdr, h_dest),
-			   dst_mac, sizeof(dst_mac));
-		snprintf(buf, len, "from=%s(%s) to=%s(%s)",
-			 src, src_mac, dst, dst_mac);
-		return;
-	}
-
-	snprintf(buf, len, "from=%s to=%s", src, dst);
-}
-
-void addr_list_init(struct addr_list *list)
-{
-	snprintf(list->buf, sizeof(list->buf), "[");
-	list->len = strlen(list->buf);
-	list->first = true;
-	list->truncated = false;
-}
-
-void addr_list_append(struct addr_list *list, const struct in6_addr *addr)
-{
-	char ip[INET6_ADDRSTRLEN];
-	char piece[INET6_ADDRSTRLEN + sizeof(",")];
-	int n;
-
-	if (list->truncated)
-		return;
-	if (inet_ntop(AF_INET6, addr, ip, sizeof(ip)) == NULL)
-		snprintf(ip, sizeof(ip), "?");
-
-	n = snprintf(piece, sizeof(piece), "%s%s", list->first ? "" : ",", ip);
-	if (n < 0 || (size_t)n >= sizeof(piece) ||
-	    list->len + (size_t)n + sizeof(",...]") > sizeof(list->buf)) {
-		list->truncated = true;
-		return;
-	}
-
-	memcpy(list->buf + list->len, piece, (size_t)n);
-	list->len += (size_t)n;
-	list->buf[list->len] = '\0';
-	list->first = false;
-}
-
-const char *addr_list_finish(struct addr_list *list)
-{
-	const char *suffix = list->truncated ? ",...]" : "]";
-	size_t suffix_len = strlen(suffix);
-
-	if (list->first && list->truncated)
-		suffix = "...]";
-
-	suffix_len = strlen(suffix);
-	if (list->len + suffix_len < sizeof(list->buf)) {
-		memcpy(list->buf + list->len, suffix, suffix_len + 1);
-		list->len += suffix_len;
-	} else {
-		list->buf[sizeof(list->buf) - sizeof("]")] = ']';
-		list->buf[sizeof(list->buf) - 1] = '\0';
-	}
-
-	return list->buf;
-}
-
-void format_hex(const uint8_t *data, size_t data_len,
-		       char *buf, size_t buf_len)
-{
-	static const char hex[] = "0123456789abcdef";
-	static const char ellipsis[] = "...";
-	const unsigned int nibble_bits = CHAR_BIT / 2U;
-	const uint8_t low_nibble_mask = (uint8_t)((1U << nibble_bits) - 1U);
-	size_t i;
-	size_t out = 0;
-
-	if (buf_len == 0)
-		return;
-
-	for (i = 0; i < data_len; i++) {
-		if (buf_len - out <= sizeof("ff") - 1U)
-			break;
-		buf[out++] = hex[data[i] >> nibble_bits];
-		buf[out++] = hex[data[i] & low_nibble_mask];
-	}
-
-	if (i < data_len && sizeof(ellipsis) <= buf_len - out) {
-		memcpy(buf + out, ellipsis, sizeof(ellipsis) - 1U);
-		out += sizeof(ellipsis) - 1U;
-	}
-	buf[out] = '\0';
-}
-
-void duid_ethernet_mac(const uint8_t *duid, size_t len,
-			      char *buf, size_t buf_len)
-{
-	const uint8_t *mac = NULL;
-	uint16_t duid_type;
-	uint16_t hw_type;
-
-	if (buf_len == 0)
-		return;
-	buf[0] = '\0';
-
-	if (len < offsetof(struct duid_ll_ethernet_wire, mac))
-		return;
-
-	duid_type = read_be16(duid + offsetof(struct duid_ll_ethernet_wire, type));
-	hw_type = read_be16(duid +
-			     offsetof(struct duid_ll_ethernet_wire, hardware_type));
-	if (hw_type != HWTYPE_ETHERNET)
-		return;
-
-	if (duid_type == DUID_LLT && len == sizeof(struct duid_llt_ethernet_wire))
-		mac = duid + offsetof(struct duid_llt_ethernet_wire, mac);
-	else if (duid_type == DUID_LL && len == sizeof(struct duid_ll_ethernet_wire))
-		mac = duid + offsetof(struct duid_ll_ethernet_wire, mac);
-
-	if (mac != NULL)
-		format_mac(mac, buf, buf_len);
-}
-
-const char *dhcpv6_msg_name(uint8_t type)
-{
-	switch (type) {
-	case DHCPV6_SOLICIT:             return "Solicit";
-	case DHCPV6_ADVERTISE:           return "Advertise";
-	case DHCPV6_REQUEST:             return "Request";
-	case DHCPV6_CONFIRM:             return "Confirm";
-	case DHCPV6_RENEW:               return "Renew";
-	case DHCPV6_REBIND:              return "Rebind";
-	case DHCPV6_REPLY:               return "Reply";
-	case DHCPV6_RELEASE:             return "Release";
-	case DHCPV6_DECLINE:             return "Decline";
-	case DHCPV6_RECONFIGURE:         return "Reconfigure";
-	case DHCPV6_INFORMATION_REQUEST: return "Information-Request";
-	case DHCPV6_RELAY_FORWARD:       return "Relay-Forward";
-	case DHCPV6_RELAY_REPLY:         return "Relay-Reply";
-	default:                          return "Unknown";
-	}
 }
 
 int validate_nd_options(struct ndp_msg *msg)
@@ -504,7 +272,7 @@ static uint32_t checksum_add(uint32_t sum, const uint8_t *buf, size_t len)
  * ICMPv6 checksum helper. Keep this one small checksum routine for RA only.
  */
 uint16_t icmpv6_checksum(const struct ip6_hdr *ip6h,
-				const uint8_t *icmp, size_t icmp_len)
+			 const uint8_t *icmp, size_t icmp_len)
 {
 	struct ipv6_pseudo_header pseudo = {
 		.source = ip6h->ip6_src,

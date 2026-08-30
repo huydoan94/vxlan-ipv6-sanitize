@@ -47,11 +47,6 @@
 #define DHCPV6_OPT_CLIENTID 1U
 #define DHCPV6_OPT_DNS_SERVERS 23U
 
-#define CLIENT_ID_BUFSIZE 384U
-#define DETAIL_BUFSIZE 1536U
-#define ERROR_BUFSIZE 256U
-#define ENDPOINT_BUFSIZE 256U
-
 struct rdnss_option_wire {
 	uint8_t type;
 	uint8_t length_units;
@@ -243,11 +238,9 @@ static int sanitize_ra(struct app_ctx *ctx, struct pkt_buff *pktb,
 	write_be16(icmp_bytes + offsetof(struct icmp6_hdr, icmp6_cksum),
 		   icmpv6_checksum(ip6h, icmp_bytes, icmp_len));
 
-	snprintf(detail, detail_len,
-		 "type=RA %s router-lifetime=%u->%u rdnss=%s->%s rdnss-rewritten=%u",
-		 endpoints, original_lifetime, RA_NEUTRAL_ROUTER_LIFETIME,
-		 addr_list_finish(&original_rdnss),
-		 addr_list_finish(&modified_rdnss), rewritten);
+	format_ra_log_detail(detail, detail_len, endpoints, original_lifetime,
+			     RA_NEUTRAL_ROUTER_LIFETIME, &original_rdnss,
+			     &modified_rdnss, rewritten);
 
 	return 1;
 }
@@ -269,7 +262,6 @@ static int sanitize_dhcpv6(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	size_t offset;
 	uint16_t udp_len;
 	uint8_t msg_type;
-	uint32_t xid;
 	unsigned int dns_options = 0;
 	unsigned int rewritten = 0;
 	char client_id[CLIENT_ID_BUFSIZE] = "";
@@ -311,9 +303,6 @@ static int sanitize_dhcpv6(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	msg_type = dhcp[offsetof(struct dhcpv6_direct_header_wire, message_type)];
 	if (msg_type == DHCPV6_RELAY_FORWARD || msg_type == DHCPV6_RELAY_REPLY)
 		return 0;
-
-	xid = read_be24(dhcp +
-		offsetof(struct dhcpv6_direct_header_wire, transaction_id));
 
 	addr_list_init(&original_dns);
 	addr_list_init(&modified_dns);
@@ -423,16 +412,11 @@ static int sanitize_dhcpv6(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	if (udp->check == 0)
 		udp->check = htons(UINT16_MAX);
 
-	snprintf(detail, detail_len,
-		 "type=DHCPv6-%s %s xid=0x%0*x client-id=%s client-mac=%s "
-		 "dns=%s->%s dns-options=%u dns-rewritten=%u",
-		 dhcpv6_msg_name(msg_type), endpoints,
-		 (int)(DHCPV6_TRANSACTION_ID_LEN * 2U), xid,
-		 client_id[0] ? client_id : "-",
-		 client_mac[0] ? client_mac : "-",
-		 addr_list_finish(&original_dns),
-		 addr_list_finish(&modified_dns),
-		 dns_options, rewritten);
+	format_dhcpv6_log_detail(
+		detail, detail_len, msg_type, endpoints,
+		dhcp + offsetof(struct dhcpv6_direct_header_wire, transaction_id),
+		client_id, client_mac, &original_dns, &modified_dns,
+		dns_options, rewritten);
 
 	return 1;
 }
