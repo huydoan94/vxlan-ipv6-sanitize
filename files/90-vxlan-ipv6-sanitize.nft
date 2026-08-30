@@ -1,0 +1,17 @@
+# Intercept IPv6 configuration advertisements immediately after VXLAN
+# decapsulation and before the bridge FDB/flooding decision. Matching the
+# interface kind avoids depending on a specific vxlan device name.
+#
+# The first two statements make this drop-in idempotent across fw4 reloads,
+# following the same create/flush/redeclare pattern used by fw4 itself.
+table bridge vxlan_ipv6_sanitize
+flush table bridge vxlan_ipv6_sanitize
+
+table bridge vxlan_ipv6_sanitize {
+	chain vxlan_ingress {
+		type filter hook prerouting priority filter; policy accept;
+
+		meta iifkind "vxlan" icmpv6 type nd-router-advert counter queue num 100 bypass comment "sanitize remote IPv6 router advertisements"
+		meta iifkind "vxlan" udp sport 547 udp dport 546 counter queue num 100 bypass comment "sanitize direct DHCPv6 server replies"
+	}
+}
