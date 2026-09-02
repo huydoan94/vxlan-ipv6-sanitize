@@ -807,6 +807,8 @@ int main(int argc, char **argv)
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
+	log_info("vxlan-ipv6-sanitize: starting");
+
 	if (install_signal_handlers() < 0) {
 		log_error("failed to install signal handlers: %s", strerror(errno));
 		exit_status = EXIT_FAILURE;
@@ -854,8 +856,7 @@ int main(int argc, char **argv)
 	pfd.events = POLLIN;
 	pfd.revents = 0;
 
-	if (ctx.verbose)
-		log_info("vxlan-ipv6-sanitize listening on NFQUEUE %u", QUEUE_NUM);
+	log_info("vxlan-ipv6-sanitize: listening on NFQUEUE %u", QUEUE_NUM);
 
 	while (running) {
 		rv = poll(&pfd, 1, POLL_TIMEOUT_MS);
@@ -901,8 +902,7 @@ int main(int argc, char **argv)
 		break;
 	}
 
-	if (ctx.verbose)
-		log_info("stopping");
+	log_info("vxlan-ipv6-sanitize: stopping");
 
 out_queue:
 	if (qh != NULL)
@@ -911,5 +911,6 @@ out_nfq:
 	if (h != NULL)
 		nfq_close(h);
 out:
+	log_info("vxlan-ipv6-sanitize: exiting");
 	return exit_status;
 }
