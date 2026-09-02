@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.18
+PKG_VERSION:=1.2.19
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT

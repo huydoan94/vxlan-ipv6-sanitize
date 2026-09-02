@@ -117,23 +117,15 @@ static void format_destination(const struct in6_addr *addr,
 		snprintf(buf, len, "%s", ip);
 }
 
-void format_endpoints(const struct bridge_packet_view *packet,
-                      const struct ip6_hdr *ip6h, char *buf, size_t len)
+void format_endpoints(const struct ip6_hdr *ip6h, char *buf, size_t len)
 {
-	const struct ethhdr *ethernet =
-		(const struct ethhdr *)packet->ethernet_frame;
 	char src[INET6_ADDRSTRLEN];
 	char dst[DESTINATION_TEXT_BUFSIZE];
-	char src_mac[MAC_TEXT_BUFSIZE];
-	char dst_mac[MAC_TEXT_BUFSIZE];
 
 	format_ipv6(&ip6h->ip6_src, src, sizeof(src));
 	format_destination(&ip6h->ip6_dst, dst, sizeof(dst));
-	format_mac(ethernet->h_source, src_mac, sizeof(src_mac));
-	format_mac(ethernet->h_dest, dst_mac, sizeof(dst_mac));
 
-	snprintf(buf, len, "from=%s(%s) to=%s(%s)",
-	         src, src_mac, dst, dst_mac);
+	snprintf(buf, len, "from=%s to=%s", src, dst);
 }
 
 void format_local_dns_log(const struct in6_addr *dns, const char *ifname,

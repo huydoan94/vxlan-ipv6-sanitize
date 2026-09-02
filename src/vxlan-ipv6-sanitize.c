@@ -620,32 +620,16 @@ static int accept_unchanged(struct nfq_q_handle *qh, uint32_t id,
 	return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 }
 
-static int verdict_with_modified_frame(struct nfq_q_handle *qh, uint32_t id,
-                                       struct bridge_packet_view *packet,
-                                       struct pkt_buff *pktb)
+/*
+ * A replacement verdict carries NFQA_PAYLOAD only. For bridge-family packets
+ * the kernel retains the original L2/VLAN metadata separately, so return the
+ * modified IPv6 packet exactly as nfq_get_payload() exposed it.
+ */
+static int verdict_with_modified_ipv6(struct nfq_q_handle *qh, uint32_t id,
+                                      struct pkt_buff *pktb)
 {
-	size_t new_ipv6_len = pktb_len(pktb);
-	size_t new_frame_len;
-
-	if (new_ipv6_len > packet->ipv6_packet_len)
-		return -1; /* Current policy only performs same-length or shrinking edits. */
-
-	/*
-	 * pktb contains the modified IPv6 packet only. Put it back into the
-	 * original Ethernet frame, then move any trailing Ethernet bytes forward
-	 * if the IPv6 packet became shorter.
-	 */
-	memcpy(packet->ipv6_packet, pktb_data(pktb), new_ipv6_len);
-	if (packet->trailing_data_len != 0 &&
-	    new_ipv6_len != packet->ipv6_packet_len) {
-		memmove(packet->ipv6_packet + new_ipv6_len,
-		        packet->trailing_data, packet->trailing_data_len);
-	}
-
-	new_frame_len = packet->ethernet_frame_len -
-		packet->ipv6_packet_len + new_ipv6_len;
 	return nfq_set_verdict(qh, id, NF_ACCEPT,
-	                       (uint32_t)new_frame_len, packet->ethernet_frame);
+	                       (uint32_t)pktb_len(pktb), pktb_data(pktb));
 }
 
 static int packet_cb(struct nfq_q_handle *qh,
@@ -657,7 +641,7 @@ static int packet_cb(struct nfq_q_handle *qh,
 	struct nfqnl_msg_packet_hdr *ph;
 	unsigned char *payload = NULL;
 	struct pkt_buff *pktb = NULL;
-	struct bridge_packet_view packet;
+	struct ipv6_packet_view ipv6;
 	struct ip6_hdr *ip6h;
 	struct in6_addr local_dns;
 	char dns_ifname[IF_NAMESIZE] = "";
@@ -685,13 +669,12 @@ static int packet_cb(struct nfq_q_handle *qh,
 		return accept_unchanged(qh, id, pktb);
 	}
 
-	if (parse_bridge_ipv6_frame(payload, (size_t)payload_len, &packet) < 0) {
-		log_error("id=%u: invalid bridge Ethernet/IPv6 frame; ACCEPT unchanged",
-		          id);
+	if (parse_nfqueue_ipv6_payload(payload, (size_t)payload_len, &ipv6) < 0) {
+		log_error("id=%u: invalid NFQUEUE IPv6 payload; ACCEPT unchanged", id);
 		return accept_unchanged(qh, id, pktb);
 	}
 
-	pktb = pktb_alloc(AF_INET6, packet.ipv6_packet, packet.ipv6_packet_len, 0);
+	pktb = pktb_alloc(AF_INET6, ipv6.data, ipv6.len, 0);
 	if (pktb == NULL) {
 		log_error("id=%u: pktb_alloc() failed; ACCEPT unchanged", id);
 		return accept_unchanged(qh, id, pktb);
@@ -710,7 +693,7 @@ static int packet_cb(struct nfq_q_handle *qh,
 	}
 
 	if (ctx->verbose)
-		format_endpoints(&packet, ip6h, endpoints, sizeof(endpoints));
+		format_endpoints(ip6h, endpoints, sizeof(endpoints));
 
 	indev = nfq_get_indev(nfa);
 	physindev = nfq_get_physindev(nfa);
@@ -760,10 +743,10 @@ static int packet_cb(struct nfq_q_handle *qh,
 	if (ctx->verbose)
 		log_info("id=%u local-dns=%s %s", id, local_dns_log, detail);
 
-	verdict = verdict_with_modified_frame(qh, id, &packet, pktb);
+	verdict = verdict_with_modified_ipv6(qh, id, pktb);
 	if (verdict < 0) {
-		log_error("id=%u: could not construct modified verdict; ACCEPT unchanged",
-		          id);
+		log_error("id=%u: could not construct modified IPv6 verdict; "
+		          "ACCEPT unchanged", id);
 		return accept_unchanged(qh, id, pktb);
 	}
 

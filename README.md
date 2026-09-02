@@ -93,9 +93,9 @@ table bridge vxlan_ipv6_sanitize {
 }
 ```
 
-The daemon listens on NFQUEUE `100` and intentionally expects a bridge-family
-NFQUEUE payload containing a complete Ethernet frame. VLAN-tagged IPv6 frames
-are supported.
+The daemon listens on NFQUEUE `100`. For bridge-family queues, Linux exposes
+the IPv6 packet through `NFQA_PAYLOAD`; the Ethernet header is carried
+separately by NFQUEUE and is left unchanged by this daemon.
 
 ## Configuration
 

@@ -34,10 +34,7 @@ void log_error(const char *fmt, ...);
 __attribute__((format(printf, 3, 4)))
 void set_error(char *buf, size_t len, const char *fmt, ...);
 
-struct bridge_packet_view;
-
-void format_endpoints(const struct bridge_packet_view *packet,
-                      const struct ip6_hdr *ip6h, char *buf, size_t len);
+void format_endpoints(const struct ip6_hdr *ip6h, char *buf, size_t len);
 void format_local_dns_log(const struct in6_addr *dns, const char *ifname,
                           char *buf, size_t len);
 

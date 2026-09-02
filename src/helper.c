@@ -13,8 +13,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <linux/if_ether.h>
-
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
 #define IPV6_WIRE_VERSION 6U
@@ -23,11 +21,6 @@
 #define IPV6_ULA_PREFIX_VALUE 0xfcU
 #define IPV6_PSEUDO_RESERVED_LEN 3U
 #define SYSFS_LINK_BUFSIZE 256U
-
-struct vlan_tag_wire {
-	uint16_t tci;
-	uint16_t encapsulated_proto;
-} __attribute__((packed));
 
 struct ipv6_pseudo_header {
 	struct in6_addr source;
@@ -146,9 +139,9 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
 }
 
 /*
- * Parse the NFQUEUE bridge-family payload as one Ethernet frame containing a
- * complete IPv6 packet. VLAN tags are part of the L2 prefix; callers do not
- * need to calculate or carry an IPv6 offset.
+ * NFQUEUE bridge-family packets expose the network packet through
+ * NFQA_PAYLOAD. The Ethernet header, when present, is carried separately in
+ * NFQA_L2HDR and is therefore not returned by nfq_get_payload().
  */
 static bool has_ipv6_version(const uint8_t *packet)
 {
@@ -157,63 +150,30 @@ static bool has_ipv6_version(const uint8_t *packet)
 	return (packet[0] >> version_shift) == IPV6_WIRE_VERSION;
 }
 
-static bool is_vlan_ethertype(uint16_t ethertype)
+int parse_nfqueue_ipv6_payload(uint8_t *payload, size_t payload_len,
+                                struct ipv6_packet_view *view)
 {
-	return ethertype == ETH_P_8021Q ||
-	       ethertype == ETH_P_8021AD ||
-	       ethertype == ETH_P_QINQ1;
-}
-
-int parse_bridge_ipv6_frame(uint8_t *frame, size_t frame_len,
-                            struct bridge_packet_view *view)
-{
-	const size_t ethernet_proto_offset = offsetof(struct ethhdr, h_proto);
-	const size_t vlan_proto_offset =
-		offsetof(struct vlan_tag_wire, encapsulated_proto);
 	const size_t ipv6_payload_len_offset = offsetof(struct ip6_hdr, ip6_plen);
-	uint8_t *ipv6;
-	uint8_t *frame_end;
-	uint16_t ethertype;
-	uint16_t payload_len;
-	size_t l2_len;
-	size_t ipv6_len;
+	uint16_t ipv6_payload_len;
+	size_t ipv6_packet_len;
 
-	if (frame == NULL || view == NULL || frame_len < sizeof(struct ethhdr))
+	if (payload == NULL || view == NULL ||
+	    payload_len < sizeof(struct ip6_hdr))
 		return -1;
 
-	frame_end = frame + frame_len;
-	ethertype = read_be16(frame + ethernet_proto_offset);
-	l2_len = sizeof(struct ethhdr);
-
-	while (is_vlan_ethertype(ethertype)) {
-		if (sizeof(struct vlan_tag_wire) > frame_len - l2_len)
-			return -1;
-
-		ethertype = read_be16(frame + l2_len + vlan_proto_offset);
-		l2_len += sizeof(struct vlan_tag_wire);
-	}
-
-	if (ethertype != ETH_P_IPV6 || sizeof(struct ip6_hdr) > frame_len - l2_len)
+	if (!has_ipv6_version(payload))
 		return -1;
 
-	ipv6 = frame + l2_len;
-	if (!has_ipv6_version(ipv6))
-		return -1;
-
-	payload_len = read_be16(ipv6 + ipv6_payload_len_offset);
-	if (payload_len == 0)
+	ipv6_payload_len = read_be16(payload + ipv6_payload_len_offset);
+	if (ipv6_payload_len == 0)
 		return -1; /* IPv6 jumbograms are outside this daemon's scope. */
 
-	ipv6_len = sizeof(struct ip6_hdr) + (size_t)payload_len;
-	if (ipv6_len > (size_t)(frame_end - ipv6))
+	ipv6_packet_len = sizeof(struct ip6_hdr) + (size_t)ipv6_payload_len;
+	if (ipv6_packet_len > payload_len)
 		return -1;
 
-	view->ethernet_frame = frame;
-	view->ethernet_frame_len = frame_len;
-	view->ipv6_packet = ipv6;
-	view->ipv6_packet_len = ipv6_len;
-	view->trailing_data = ipv6 + ipv6_len;
-	view->trailing_data_len = (size_t)(frame_end - view->trailing_data);
+	view->data = payload;
+	view->len = ipv6_packet_len;
 	return 0;
 }
 

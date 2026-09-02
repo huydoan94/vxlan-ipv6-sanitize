@@ -32,19 +32,13 @@ enum dhcpv6_message_type {
 };
 
 /*
- * View of one NFQUEUE bridge-family Ethernet frame.
- *
- * The daemon only accepts Ethernet frames here. ipv6_packet points directly
- * at the complete IPv6 packet inside the frame; trailing_data covers any bytes
- * following that IPv6 packet (for example Ethernet padding).
+ * NFQUEUE exposes NFQA_PAYLOAD from skb->data. For bridge-family IPv6
+ * packets, that starts at the IPv6 header; the L2 header is a separate
+ * NFQA_L2HDR attribute and is not part of nfq_get_payload().
  */
-struct bridge_packet_view {
-	uint8_t *ethernet_frame;
-	size_t ethernet_frame_len;
-	uint8_t *ipv6_packet;
-	size_t ipv6_packet_len;
-	uint8_t *trailing_data;
-	size_t trailing_data_len;
+struct ipv6_packet_view {
+	uint8_t *data;
+	size_t len;
 };
 
 /*
@@ -61,8 +55,8 @@ uint16_t read_be16(const uint8_t *p);
 int resolve_local_dns(uint32_t indev, uint32_t physindev,
                       struct in6_addr *dns,
                       char *source_ifname, size_t source_ifname_len);
-int parse_bridge_ipv6_frame(uint8_t *frame, size_t frame_len,
-                            struct bridge_packet_view *view);
+int parse_nfqueue_ipv6_payload(uint8_t *payload, size_t payload_len,
+                                struct ipv6_packet_view *view);
 
 void option_compactor_init(struct option_compactor *compactor, uint8_t *start);
 void option_compactor_keep(struct option_compactor *compactor,
