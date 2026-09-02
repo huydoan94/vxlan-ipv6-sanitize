@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.19
+PKG_VERSION:=1.2.23
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -13,13 +13,14 @@ define Package/vxlan-ipv6-sanitize
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=VXLAN IPv6 RA/DHCPv6 sanitizer
-	DEPENDS:=+kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge +libnetfilter-queue
+	DEPENDS:=+kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge \
+		+libnetfilter-queue +libtins
 endef
 
 define Package/vxlan-ipv6-sanitize/description
-	Low-memory NFQUEUE sanitizer for bridged VXLAN IPv6 configuration
-	traffic. It preserves Router Advertisement prefix/route information and
-	DHCPv6 address assignments, neutralizes remote RA default-router lifetime,
+	NFQUEUE sanitizer for bridged VXLAN IPv6 configuration traffic. It
+	preserves Router Advertisement prefix/route information and DHCPv6
+	address assignments, neutralizes remote RA default-router lifetime,
 	normalizes RA RDNSS and DHCPv6 DNS option 23 to one local ingress ULA,
 	and removes advertised DNS search lists.
 endef
@@ -28,8 +29,13 @@ define Package/vxlan-ipv6-sanitize/conffiles
 /etc/config/vxlan-ipv6-sanitize
 endef
 
-TARGET_CFLAGS += -Os -Wall -Wextra -Wformat=2 -Wshadow -Wstrict-prototypes \
-	-Werror=implicit-function-declaration -ffunction-sections -fdata-sections
+SANITIZE_SOURCES := helper.cpp logging.cpp packet_parser.cpp \
+	vxlan-ipv6-sanitize.cpp
+SANITIZE_WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow
+
+TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 \
+	-ffunction-sections -fdata-sections
+TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include
 TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Build/Prepare
@@ -39,15 +45,14 @@ define Build/Prepare
 endef
 
 define Build/Compile
-	$(TARGET_CC) \
-		$(TARGET_CFLAGS) \
+	$(TARGET_CXX) \
+		$(TARGET_CXXFLAGS) \
 		$(TARGET_CPPFLAGS) \
 		-o $(PKG_BUILD_DIR)/vxlan-ipv6-sanitize \
-		$(PKG_BUILD_DIR)/vxlan-ipv6-sanitize.c \
-		$(PKG_BUILD_DIR)/helper.c \
-		$(PKG_BUILD_DIR)/logging.c \
+		$(addprefix $(PKG_BUILD_DIR)/,$(SANITIZE_SOURCES)) \
 		$(TARGET_LDFLAGS) \
-		-lnetfilter_queue
+		-lnetfilter_queue \
+		-ltins
 endef
 
 define Package/vxlan-ipv6-sanitize/install

@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
@@ -21,31 +19,29 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
-#include <libnetfilter_queue/libnetfilter_queue_ipv6.h>
-#include <libnetfilter_queue/pktbuff.h>
-#include <libnetfilter_queue/libnetfilter_queue_udp.h>
+
+#include <tins/dhcpv6.h>
+#include <tins/icmpv6.h>
+#include <tins/pdu.h>
 
 #include "helper.h"
 #include "logging.h"
+#include "packet_parser.h"
 
-#define QUEUE_NUM 100U
-#define QUEUE_MAXLEN 1024U
-#define COPY_RANGE UINT16_MAX
-#define POLL_TIMEOUT_MS 1000
-#define NFQ_NETLINK_HEADROOM 4096U
-#define NFQ_RECV_BUFSIZE ((size_t)COPY_RANGE + NFQ_NETLINK_HEADROOM)
+constexpr uint16_t QUEUE_NUM = 100U;
+constexpr uint32_t QUEUE_MAXLEN = 1024U;
+constexpr uint32_t COPY_RANGE = UINT16_MAX;
+constexpr int POLL_TIMEOUT_MS = 1000;
+constexpr size_t NFQ_NETLINK_HEADROOM = 4096U;
+constexpr size_t NFQ_RECV_BUFSIZE = COPY_RANGE + NFQ_NETLINK_HEADROOM;
 
-#define ND_ROUTER_ADVERT_REQUIRED_HOP_LIMIT UINT8_MAX
-#define ND_ROUTER_ADVERT_CODE 0U
-#define RA_NEUTRAL_ROUTER_LIFETIME 0U
-#define ND_OPTION_RDNSS 25U /* RFC 8106 Recursive DNS Server option. */
-#define ND_OPTION_DNSSL 31U /* RFC 8106 DNS Search List option. */
+constexpr uint16_t RA_NEUTRAL_ROUTER_LIFETIME = 0U;
+constexpr uint8_t ND_OPTION_PVD = 21U;
 
-#define DHCPV6_SERVER_PORT 547U
-#define DHCPV6_CLIENT_PORT 546U
-#define DHCPV6_OPT_CLIENTID 1U
-#define DHCPV6_OPT_DNS_SERVERS 23U
-#define DHCPV6_OPT_DOMAIN_LIST 24U
+constexpr uint16_t DHCPV6_SERVER_PORT = 547U;
+constexpr uint16_t DHCPV6_CLIENT_PORT = 546U;
+
+constexpr uint16_t CHECKSUM_INVALID_XOR = 0x0001U;
 
 struct rdnss_option_wire {
 	uint8_t type;
@@ -69,19 +65,18 @@ struct app_ctx {
 	bool verbose;
 };
 
-enum packet_type {
-	PACKET_OTHER = 0,
-	PACKET_RA,
-	PACKET_DHCPV6,
-};
-
 enum sanitize_result {
 	SANITIZE_ERROR = -1,
 	SANITIZE_UNCHANGED = 0,
-	SANITIZE_CHANGED = 1,
+	SANITIZE_CHANGED,
+	SANITIZE_DROP,
 };
 
-static volatile sig_atomic_t running = 1;
+enum checksum_state {
+	CHECKSUM_VALID = 0,
+	CHECKSUM_INVALID,
+	CHECKSUM_NOT_READY,
+};
 
 struct dhcpv6_option_view {
 	uint16_t code;
@@ -90,6 +85,8 @@ struct dhcpv6_option_view {
 	uint8_t *start;
 	uint8_t *data;
 };
+
+static volatile sig_atomic_t running = 1;
 
 static int dhcpv6_option_parse(uint8_t *cursor, uint8_t *end,
                                struct dhcpv6_option_view *option,
@@ -138,144 +135,127 @@ static int install_signal_handlers(void)
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;
 
-	if (sigaction(SIGINT, &sa, NULL) < 0)
+	if (sigaction(SIGINT, &sa, nullptr) < 0)
 		return -1;
-	if (sigaction(SIGTERM, &sa, NULL) < 0)
+	if (sigaction(SIGTERM, &sa, nullptr) < 0)
 		return -1;
 
 	return 0;
 }
 
-static enum packet_type
-detect_packet_type(struct pkt_buff *pktb, struct ip6_hdr *ip6h)
+static Tins::PDU::PDUType
+detect_packet_type(const struct ipv6_transport_view *transport)
 {
-	if (ip6h->ip6_nxt == IPPROTO_ICMPV6) {
-		struct nd_router_advert *ra;
-		uint8_t *packet_end;
-		uint8_t *transport;
+	if (transport->header == nullptr)
+		return Tins::PDU::UNKNOWN;
 
-		if (!nfq_ip6_set_transport_header(pktb, ip6h, IPPROTO_ICMPV6))
-			return PACKET_OTHER;
+	if (transport->protocol == IPPROTO_ICMPV6) {
+		if (transport->len >= sizeof(uint8_t) &&
+		    transport->header[0] == Tins::ICMPv6::ROUTER_ADVERT)
+			return Tins::PDU::ICMPv6;
 
-		transport = pktb_transport_header(pktb);
-		if (transport == NULL)
-			return PACKET_OTHER;
-
-		packet_end = (uint8_t *)pktb_data(pktb) + pktb_len(pktb);
-		if (transport > packet_end ||
-		    (size_t)(packet_end - transport) < sizeof(*ra))
-			return PACKET_OTHER;
-
-		ra = (struct nd_router_advert *)transport;
-		if (ra->nd_ra_type == ND_ROUTER_ADVERT &&
-		    ra->nd_ra_code == ND_ROUTER_ADVERT_CODE)
-			return PACKET_RA;
-
-		return PACKET_OTHER;
+		return Tins::PDU::UNKNOWN;
 	}
 
-	if (ip6h->ip6_nxt == IPPROTO_UDP) {
-		struct udphdr *udp;
+	if (transport->protocol == IPPROTO_UDP) {
+		const struct udphdr *udp;
 
-		if (!nfq_ip6_set_transport_header(pktb, ip6h, IPPROTO_UDP))
-			return PACKET_OTHER;
+		if (transport->len < sizeof(*udp))
+			return Tins::PDU::UNKNOWN;
 
-		udp = nfq_udp_get_hdr(pktb);
-		if (udp == NULL)
-			return PACKET_OTHER;
-
+		udp = (const struct udphdr *)transport->header;
 		if (ntohs(udp->source) == DHCPV6_SERVER_PORT &&
 		    ntohs(udp->dest) == DHCPV6_CLIENT_PORT)
-			return PACKET_DHCPV6;
+			return Tins::PDU::DHCPv6;
 	}
 
-	return PACKET_OTHER;
+	return Tins::PDU::UNKNOWN;
 }
 
-/*
- * Remove bytes from the end of an IPv6 transport payload. Keep the
- * libnetfilter_queue offset arithmetic here so sanitizer code works with
- * named packet pointers and lengths only.
- */
-static int shrink_ipv6_transport(struct pkt_buff *pktb, uint8_t *transport,
-                                 size_t new_transport_len,
-                                 size_t original_transport_len)
+static enum checksum_state
+ra_checksum_state(const struct ip6_hdr *ip6h, const uint8_t *icmp,
+                  size_t icmp_len, bool checksum_not_ready)
 {
-	uint8_t *network = pktb_data(pktb);
-	size_t transport_from_network;
-	size_t remove_len;
+	if (checksum_not_ready)
+		return CHECKSUM_NOT_READY;
 
-	if (new_transport_len > original_transport_len || transport < network)
-		return 0;
-	if (new_transport_len == original_transport_len)
-		return 1;
+	if (icmpv6_checksum(ip6h, icmp, icmp_len) == 0U)
+		return CHECKSUM_VALID;
 
-	transport_from_network = (size_t)(transport - network);
-	if (transport_from_network > pktb_len(pktb))
-		return 0;
-
-	remove_len = original_transport_len - new_transport_len;
-	return nfq_ip6_mangle(pktb,
-	                      (unsigned int)transport_from_network,
-	                      (unsigned int)new_transport_len,
-	                      (unsigned int)remove_len, "", 0U);
+	return CHECKSUM_INVALID;
 }
 
-/*
- * Sanitize a packet already classified as a Router Advertisement.
- */
+static enum checksum_state
+udp_checksum_state(const struct ip6_hdr *ip6h, const struct udphdr *udp,
+                   size_t udp_len, bool checksum_not_ready)
+{
+	if (checksum_not_ready)
+		return CHECKSUM_NOT_READY;
+	if (udp->check == 0)
+		return CHECKSUM_INVALID;
+
+	if (udp_ipv6_checksum(ip6h, (const uint8_t *)udp, udp_len) == 0U)
+		return CHECKSUM_VALID;
+
+	return CHECKSUM_INVALID;
+}
+
+static uint16_t preserve_checksum_state(uint16_t correct,
+                                        enum checksum_state state,
+                                        bool udp_checksum)
+{
+	uint16_t wire_value = correct;
+
+	if (udp_checksum && wire_value == 0U)
+		wire_value = UINT16_MAX;
+
+	if (state == CHECKSUM_INVALID)
+		wire_value ^= CHECKSUM_INVALID_XOR;
+
+	return wire_value;
+}
+
 static enum sanitize_result
-sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
-            const struct in6_addr *local_dns, const char *endpoints,
-            char *detail, size_t detail_len, char *error, size_t error_len)
+sanitize_ra(struct ipv6_packet_view *packet,
+            const struct ipv6_transport_view *transport,
+            const struct in6_addr *local_dns, bool checksum_not_ready,
+            const char *endpoints, char *detail, size_t detail_len,
+            char *error, size_t error_len)
 {
+	struct ip6_hdr *ip6h = packet->header;
 	struct nd_router_advert *ra;
 	struct option_compactor compactor;
-	uint8_t *icmp_bytes;
-	uint8_t *packet_end;
+	uint8_t *icmp_bytes = transport->header;
 	uint8_t *options;
 	uint8_t *options_end;
-	size_t icmp_len;
+	size_t icmp_len = transport->len;
 	size_t options_len;
 	size_t new_options_len;
+	size_t remove_len;
 	uint16_t original_lifetime;
 	unsigned int rdnss_options = 0;
 	unsigned int rdnss_addresses = 0;
 	unsigned int rdnss_rewritten = 0;
 	unsigned int rdnss_deduplicated;
 	unsigned int dnssl_removed = 0;
+	unsigned int pvd_removed = 0;
 	bool kept_rdnss = false;
+	bool send_signed = false;
 	bool router_lifetime_changed;
 	bool changed;
-	bool log_details = detail != NULL && detail_len != 0;
+	bool log_details = detail != nullptr && detail_len != 0;
+	enum checksum_state checksum_state;
+	uint16_t new_checksum;
 	struct addr_list original_rdnss;
 
-	icmp_bytes = pktb_transport_header(pktb);
-	if (icmp_bytes == NULL) {
-		set_error(error, error_len, "RA transport header unavailable");
-		return SANITIZE_ERROR;
-	}
-
-	packet_end = (uint8_t *)pktb_data(pktb) + pktb_len(pktb);
-	if (icmp_bytes > packet_end) {
-		set_error(error, error_len, "RA transport header outside packet");
-		return SANITIZE_ERROR;
-	}
-	icmp_len = (size_t)(packet_end - icmp_bytes);
-
-	if (icmp_len < sizeof(struct nd_router_advert)) {
+	if (icmp_bytes == nullptr || icmp_len < sizeof(struct nd_router_advert)) {
 		set_error(error, error_len, "truncated Router Advertisement");
 		return SANITIZE_ERROR;
 	}
 
 	ra = (struct nd_router_advert *)icmp_bytes;
-
-	if (ip6h->ip6_hlim != ND_ROUTER_ADVERT_REQUIRED_HOP_LIMIT) {
-		set_error(error, error_len,
-		          "RA hop limit %u is not %u", ip6h->ip6_hlim,
-		          ND_ROUTER_ADVERT_REQUIRED_HOP_LIMIT);
-		return SANITIZE_ERROR;
-	}
+	checksum_state = ra_checksum_state(ip6h, icmp_bytes, icmp_len,
+	                                   checksum_not_ready);
 
 	original_lifetime = ntohs(ra->nd_ra_router_lifetime);
 	router_lifetime_changed =
@@ -291,16 +271,6 @@ sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 	options_end = options + options_len;
 	option_compactor_init(&compactor, options);
 
-	/*
-	 * Compact the RA option stream in place while walking it once:
-	 *   - keep the first RDNSS, normalized to one local DNS address;
-	 *   - skip later RDNSS options;
-	 *   - skip DNSSL options;
-	 *   - move unrelated options forward only after a gap is created.
-	 *
-	 * pktb is a private packet copy, so a malformed option discovered later
-	 * can still fail open without exposing any partial edits.
-	 */
 	while (compactor.read < options_end) {
 		struct nd_option_header_wire *header;
 		uint8_t *opt = compactor.read;
@@ -324,13 +294,25 @@ sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 			return SANITIZE_ERROR;
 		}
 
-		if (header->type == ND_OPTION_DNSSL) {
+		if (header->type == Tins::ICMPv6::RSA_SIGN) {
+			send_signed = true;
+			option_compactor_keep(&compactor, opt_len);
+			continue;
+		}
+
+		if (header->type == ND_OPTION_PVD) {
+			pvd_removed++;
+			option_compactor_skip(&compactor, opt_len);
+			continue;
+		}
+
+		if (header->type == Tins::ICMPv6::DNS_SEARCH_LIST) {
 			dnssl_removed++;
 			option_compactor_skip(&compactor, opt_len);
 			continue;
 		}
 
-		if (header->type == ND_OPTION_RDNSS) {
+		if (header->type == Tins::ICMPv6::RECURSIVE_DNS_SERV) {
 			const size_t fixed_len = sizeof(struct rdnss_option_wire);
 			const size_t single_dns_len =
 				fixed_len + sizeof(struct in6_addr);
@@ -379,104 +361,108 @@ sanitize_ra(struct pkt_buff *pktb, struct ip6_hdr *ip6h,
 		router_lifetime_changed ||
 		rdnss_rewritten != 0 ||
 		rdnss_deduplicated != 0 ||
-		dnssl_removed != 0;
+		dnssl_removed != 0 ||
+		pvd_removed != 0;
 
 	if (!changed)
 		return SANITIZE_UNCHANGED;
 
-	new_options_len = option_compactor_output_len(&compactor);
-	if (!shrink_ipv6_transport(pktb, icmp_bytes,
-	                           sizeof(*ra) + new_options_len, icmp_len)) {
+	if (send_signed) {
 		set_error(error, error_len,
-		          "libnetfilter_queue failed to compact RA options");
+		          "SEND-signed RA requires modification; DROP");
+		return SANITIZE_DROP;
+	}
+
+	new_options_len = option_compactor_output_len(&compactor);
+	remove_len = options_len - new_options_len;
+	if (remove_len != 0 &&
+	    ipv6_packet_remove(packet, options + new_options_len, remove_len) < 0) {
+		set_error(error, error_len, "failed to compact RA options");
 		return SANITIZE_ERROR;
 	}
 
-	icmp_len = sizeof(*ra) + new_options_len;
-
-	/* All RA edits share one final ICMPv6 checksum calculation. */
-	ip6h = nfq_ip6_get_hdr(pktb);
-	icmp_bytes = pktb_transport_header(pktb);
-	if (ip6h == NULL || icmp_bytes == NULL) {
-		set_error(error, error_len, "RA headers unavailable after compaction");
-		return SANITIZE_ERROR;
-	}
+	icmp_len -= remove_len;
 	ra = (struct nd_router_advert *)icmp_bytes;
 	ra->nd_ra_cksum = 0;
-	ra->nd_ra_cksum = htons(icmpv6_checksum(ip6h, icmp_bytes, icmp_len));
+	new_checksum = icmpv6_checksum(ip6h, icmp_bytes, icmp_len);
+	ra->nd_ra_cksum = htons(preserve_checksum_state(new_checksum,
+	                                                checksum_state, false));
 
 	if (log_details)
 		format_ra_log_detail(detail, detail_len, endpoints, original_lifetime,
 		                     RA_NEUTRAL_ROUTER_LIFETIME, &original_rdnss,
 		                     rdnss_options, rdnss_rewritten,
-		                     rdnss_deduplicated, dnssl_removed);
+		                     rdnss_deduplicated, dnssl_removed, pvd_removed);
 
 	return SANITIZE_CHANGED;
 }
 
-/*
- * Sanitize a packet already classified as direct DHCPv6 server-to-client.
- */
 static enum sanitize_result
-sanitize_dhcpv6(struct pkt_buff *pktb, const struct in6_addr *local_dns,
+sanitize_dhcpv6(struct ipv6_packet_view *packet,
+                const struct ipv6_transport_view *transport,
+                const struct in6_addr *local_dns, bool checksum_not_ready,
                 const char *endpoints, char *detail, size_t detail_len,
                 char *error, size_t error_len)
 {
-	struct ip6_hdr *ip6h;
-	struct udphdr *udp;
+	struct ip6_hdr *ip6h = packet->header;
+	struct udphdr *udp = (struct udphdr *)transport->header;
 	struct option_compactor compactor;
 	uint8_t *dhcp;
 	struct dhcpv6_direct_header_wire *message;
 	uint8_t *options_start;
 	uint8_t *options_end;
-	size_t available_udp_payload;
+	size_t available_udp_len = transport->len;
 	size_t dhcp_len;
 	size_t new_dhcp_len;
+	size_t remove_len;
 	uint16_t udp_len;
-	uint8_t msg_type;
+	Tins::DHCPv6::MessageType msg_type;
+	const char *message_name;
 	unsigned int dns_options = 0;
 	unsigned int dns_addresses = 0;
 	unsigned int dns_rewritten = 0;
 	unsigned int dns_deduplicated;
 	unsigned int domain_search_removed = 0;
 	bool kept_dns = false;
+	bool authenticated = false;
 	bool changed;
-	bool log_details = detail != NULL && detail_len != 0;
+	bool log_details = detail != nullptr && detail_len != 0;
+	enum checksum_state checksum_state;
+	uint16_t new_checksum;
 	uint8_t transaction_id[DHCPV6_TRANSACTION_ID_LEN] = { 0 };
 	char client_id[CLIENT_ID_BUFSIZE] = "";
 	char client_mac[MAC_TEXT_BUFSIZE] = "";
 	struct addr_list original_dns;
 
-	udp = nfq_udp_get_hdr(pktb);
-	if (udp == NULL) {
-		set_error(error, error_len, "DHCPv6 UDP header unavailable");
-		return SANITIZE_ERROR;
-	}
+	if (udp == nullptr || available_udp_len < sizeof(*udp))
+		return SANITIZE_UNCHANGED;
 
-	available_udp_payload = nfq_udp_get_payload_len(udp, pktb);
 	udp_len = ntohs(udp->len);
-	if (udp_len < sizeof(*udp) ||
-	    (size_t)udp_len - sizeof(*udp) > available_udp_payload) {
-		set_error(error, error_len, "invalid UDP length %u", udp_len);
-		return SANITIZE_ERROR;
+	if (udp_len == 0)
+		return SANITIZE_UNCHANGED;
+	if (udp_len < sizeof(*udp))
+		return SANITIZE_UNCHANGED;
+	if ((size_t)udp_len > available_udp_len) {
+		set_error(error, error_len,
+		          "UDP length %u exceeds captured transport length %zu; DROP",
+		          udp_len, available_udp_len);
+		return SANITIZE_DROP;
 	}
 
-	dhcp = nfq_udp_get_payload(udp, pktb);
-	if (dhcp == NULL) {
-		set_error(error, error_len, "DHCPv6 UDP payload unavailable");
-		return SANITIZE_ERROR;
-	}
+	checksum_state = udp_checksum_state(ip6h, udp, udp_len,
+	                                    checksum_not_ready);
+	dhcp = (uint8_t *)udp + sizeof(*udp);
 	dhcp_len = (size_t)udp_len - sizeof(*udp);
 
-	if (dhcp_len < sizeof(struct dhcpv6_direct_header_wire)) {
-		set_error(error, error_len, "truncated DHCPv6 direct-message header");
-		return SANITIZE_ERROR;
-	}
+	if (dhcp_len < sizeof(struct dhcpv6_direct_header_wire))
+		return SANITIZE_UNCHANGED;
 
 	message = (struct dhcpv6_direct_header_wire *)dhcp;
-	msg_type = message->message_type;
-	if (msg_type == DHCPV6_RELAY_FORWARD || msg_type == DHCPV6_RELAY_REPLY)
+	msg_type = static_cast<Tins::DHCPv6::MessageType>(message->message_type);
+	if (msg_type != Tins::DHCPv6::ADVERTISE &&
+	    msg_type != Tins::DHCPv6::REPLY)
 		return SANITIZE_UNCHANGED;
+	message_name = msg_type == Tins::DHCPv6::ADVERTISE ? "Advertise" : "Reply";
 
 	if (log_details) {
 		memcpy(transaction_id, message->transaction_id, sizeof(transaction_id));
@@ -487,13 +473,6 @@ sanitize_dhcpv6(struct pkt_buff *pktb, const struct in6_addr *local_dns,
 	options_end = dhcp + dhcp_len;
 	option_compactor_init(&compactor, options_start);
 
-	/*
-	 * Compact the top-level DHCPv6 option stream in place while walking it once:
-	 *   - keep the first DNS option, normalized to one local DNS address;
-	 *   - skip later DNS options;
-	 *   - skip Domain Search List options;
-	 *   - move unrelated options forward only after a gap is created.
-	 */
 	while (compactor.read < options_end) {
 		struct dhcpv6_option_view option;
 
@@ -501,20 +480,26 @@ sanitize_dhcpv6(struct pkt_buff *pktb, const struct in6_addr *local_dns,
 		                        &option, error, error_len) < 0)
 			return SANITIZE_ERROR;
 
-		if (log_details && option.code == DHCPV6_OPT_CLIENTID &&
+		if (option.code == Tins::DHCPv6::AUTH) {
+			authenticated = true;
+			option_compactor_keep(&compactor, option.total_len);
+			continue;
+		}
+
+		if (log_details && option.code == Tins::DHCPv6::CLIENTID &&
 		    client_id[0] == '\0') {
 			format_dhcpv6_client_log_fields(option.data, option.data_len,
 			                                client_id, sizeof(client_id),
 			                                client_mac, sizeof(client_mac));
 		}
 
-		if (option.code == DHCPV6_OPT_DOMAIN_LIST) {
+		if (option.code == Tins::DHCPv6::DOMAIN_LIST) {
 			domain_search_removed++;
 			option_compactor_skip(&compactor, option.total_len);
 			continue;
 		}
 
-		if (option.code == DHCPV6_OPT_DNS_SERVERS) {
+		if (option.code == Tins::DHCPv6::DNS_SERVERS) {
 			struct dhcpv6_option_header_wire *header;
 			uint8_t *opt;
 			const size_t fixed_len =
@@ -569,41 +554,29 @@ sanitize_dhcpv6(struct pkt_buff *pktb, const struct in6_addr *local_dns,
 	if (!changed)
 		return SANITIZE_UNCHANGED;
 
-	new_dhcp_len = sizeof(*message) + option_compactor_output_len(&compactor);
-	if (new_dhcp_len < dhcp_len) {
-		if (!nfq_udp_mangle_ipv6(pktb, (unsigned int)new_dhcp_len,
-		                         (unsigned int)(dhcp_len - new_dhcp_len),
-		                         "", 0U)) {
-			set_error(error, error_len,
-			          "libnetfilter_queue failed to compact DHCPv6 options");
-			return SANITIZE_ERROR;
-		}
-	} else {
-		/*
-		 * A same-length DNS replacement does not need a mangle operation,
-		 * but its UDP checksum still covers the changed payload.
-		 */
-		ip6h = nfq_ip6_get_hdr(pktb);
-		udp = nfq_udp_get_hdr(pktb);
-		if (ip6h == NULL || udp == NULL) {
-			set_error(error, error_len,
-			          "DHCPv6 headers unavailable for checksum update");
-			return SANITIZE_ERROR;
-		}
-		nfq_udp_compute_checksum_ipv6(udp, ip6h);
+	if (authenticated) {
+		set_error(error, error_len,
+		          "authenticated DHCPv6 requires modification; DROP");
+		return SANITIZE_DROP;
 	}
 
-	/* A computed UDP checksum of zero is transmitted as all ones. */
-	udp = nfq_udp_get_hdr(pktb);
-	if (udp == NULL) {
-		set_error(error, error_len, "UDP header unavailable after compaction");
+	new_dhcp_len = sizeof(*message) + option_compactor_output_len(&compactor);
+	remove_len = dhcp_len - new_dhcp_len;
+	if (remove_len != 0 &&
+	    ipv6_packet_remove(packet, dhcp + new_dhcp_len, remove_len) < 0) {
+		set_error(error, error_len, "failed to compact DHCPv6 options");
 		return SANITIZE_ERROR;
 	}
-	if (udp->check == 0)
-		udp->check = htons(UINT16_MAX);
+
+	udp_len = (uint16_t)((size_t)udp_len - remove_len);
+	udp->len = htons(udp_len);
+	udp->check = 0;
+	new_checksum = udp_ipv6_checksum(ip6h, (const uint8_t *)udp, udp_len);
+	udp->check = htons(preserve_checksum_state(new_checksum,
+	                                           checksum_state, true));
 
 	if (log_details)
-		format_dhcpv6_log_detail(detail, detail_len, msg_type, endpoints,
+		format_dhcpv6_log_detail(detail, detail_len, message_name, endpoints,
 		                         transaction_id, client_id, client_mac,
 		                         &original_dns, dns_options, dns_rewritten,
 		                         dns_deduplicated, domain_search_removed);
@@ -611,25 +584,21 @@ sanitize_dhcpv6(struct pkt_buff *pktb, const struct in6_addr *local_dns,
 	return SANITIZE_CHANGED;
 }
 
-static int accept_unchanged(struct nfq_q_handle *qh, uint32_t id,
-                            struct pkt_buff *pktb)
+static int accept_unchanged(struct nfq_q_handle *qh, uint32_t id)
 {
-	if (pktb != NULL)
-		pktb_free(pktb);
-
-	return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	return nfq_set_verdict(qh, id, NF_ACCEPT, 0, nullptr);
 }
 
-/*
- * A replacement verdict carries NFQA_PAYLOAD only. For bridge-family packets
- * the kernel retains the original L2/VLAN metadata separately, so return the
- * modified IPv6 packet exactly as nfq_get_payload() exposed it.
- */
+static int drop_packet(struct nfq_q_handle *qh, uint32_t id)
+{
+	return nfq_set_verdict(qh, id, NF_DROP, 0, nullptr);
+}
+
 static int verdict_with_modified_ipv6(struct nfq_q_handle *qh, uint32_t id,
-                                      struct pkt_buff *pktb)
+                                      const struct ipv6_packet_view *packet)
 {
 	return nfq_set_verdict(qh, id, NF_ACCEPT,
-	                       (uint32_t)pktb_len(pktb), pktb_data(pktb));
+	                       (uint32_t)packet->captured_len, packet->data);
 }
 
 static int packet_cb(struct nfq_q_handle *qh,
@@ -637,94 +606,110 @@ static int packet_cb(struct nfq_q_handle *qh,
                      struct nfq_data *nfa,
                      void *data)
 {
-	struct app_ctx *ctx = data;
+	struct app_ctx *ctx = static_cast<struct app_ctx *>(data);
 	struct nfqnl_msg_packet_hdr *ph;
-	unsigned char *payload = NULL;
-	struct pkt_buff *pktb = NULL;
+	unsigned char *payload = nullptr;
 	struct ipv6_packet_view ipv6;
-	struct ip6_hdr *ip6h;
+	struct ipv6_transport_view transport;
 	struct in6_addr local_dns;
 	char dns_ifname[IF_NAMESIZE] = "";
 	char local_dns_log[LOCAL_DNS_TEXT_BUFSIZE] = "";
 	char endpoints[ENDPOINT_BUFSIZE];
 	char detail[DETAIL_BUFSIZE] = "";
 	char error[ERROR_BUFSIZE] = "";
-	uint32_t id = 0;
+	uint32_t id;
 	uint32_t indev;
 	uint32_t physindev;
+	uint32_t skbinfo;
 	int payload_len;
 	int verdict;
-	enum packet_type packet_type;
+	bool checksum_not_ready;
+	enum ipv6_packet_result ipv6_result;
+	enum ipv6_transport_result transport_result;
+	Tins::PDU::PDUType packet_type;
 	enum sanitize_result result;
 
-	(void)nfmsg;
-
 	ph = nfq_get_msg_packet_hdr(nfa);
-	if (ph != NULL)
-		id = ntohl(ph->packet_id);
+	if (ph == nullptr) {
+		log_error("NFQUEUE packet header unavailable");
+		return -1;
+	}
+	id = ntohl(ph->packet_id);
+
+	if (nfmsg == nullptr || nfmsg->nfgen_family != NFPROTO_BRIDGE) {
+		if (ctx->verbose)
+			log_info("id=%u unexpected NFQUEUE family; ACCEPT unchanged", id);
+		return accept_unchanged(qh, id);
+	}
 
 	payload_len = nfq_get_payload(nfa, &payload);
-	if (payload_len <= 0 || payload == NULL) {
+	if (payload_len <= 0 || payload == nullptr) {
 		log_error("id=%u: NFQUEUE payload unavailable; ACCEPT unchanged", id);
-		return accept_unchanged(qh, id, pktb);
+		return accept_unchanged(qh, id);
 	}
 
-	if (parse_nfqueue_ipv6_payload(payload, (size_t)payload_len, &ipv6) < 0) {
-		log_error("id=%u: invalid NFQUEUE IPv6 payload; ACCEPT unchanged", id);
-		return accept_unchanged(qh, id, pktb);
-	}
-
-	pktb = pktb_alloc(AF_INET6, ipv6.data, ipv6.len, 0);
-	if (pktb == NULL) {
-		log_error("id=%u: pktb_alloc() failed; ACCEPT unchanged", id);
-		return accept_unchanged(qh, id, pktb);
-	}
-
-	ip6h = nfq_ip6_get_hdr(pktb);
-	if (ip6h == NULL) {
-		log_error("id=%u: libnetfilter_queue rejected IPv6 header; ACCEPT unchanged",
+	ipv6_result = parse_nfqueue_ipv6_payload(payload, (size_t)payload_len,
+	                                         &ipv6);
+	if (ipv6_result == IPV6_PACKET_TRUNCATED) {
+		log_error("id=%u: IPv6 declared length exceeds captured payload; DROP",
 		          id);
-		return accept_unchanged(qh, id, pktb);
+		return drop_packet(qh, id);
+	}
+	if (ipv6_result != IPV6_PACKET_OK)
+		return accept_unchanged(qh, id);
+
+	transport_result = parse_ipv6_transport(ipv6.data, ipv6.declared_len,
+	                                        &transport);
+	if (transport_result != IPV6_TRANSPORT_FOUND)
+		return accept_unchanged(qh, id);
+
+	if (transport.fragmented) {
+		log_error("id=%u: fragmented packet reached sanitizer queue; DROP", id);
+		return drop_packet(qh, id);
 	}
 
-	packet_type = detect_packet_type(pktb, ip6h);
-	if (packet_type == PACKET_OTHER) {
-		return accept_unchanged(qh, id, pktb);
-	}
+	packet_type = detect_packet_type(&transport);
+	if (packet_type == Tins::PDU::UNKNOWN)
+		return accept_unchanged(qh, id);
 
 	if (ctx->verbose)
-		format_endpoints(ip6h, endpoints, sizeof(endpoints));
+		format_endpoints(ipv6.header, endpoints, sizeof(endpoints));
 
 	indev = nfq_get_indev(nfa);
 	physindev = nfq_get_physindev(nfa);
 	if (resolve_local_dns(indev, physindev, &local_dns,
-	                      ctx->verbose ? dns_ifname : NULL,
+	                      ctx->verbose ? dns_ifname : nullptr,
 	                      ctx->verbose ? sizeof(dns_ifname) : 0U) < 0) {
 		log_error("id=%u: no ULA found on ingress interface or bridge master; "
 		          "ACCEPT unchanged", id);
-		return accept_unchanged(qh, id, pktb);
+		return accept_unchanged(qh, id);
 	}
 
 	if (ctx->verbose)
 		format_local_dns_log(&local_dns, dns_ifname,
 		                     local_dns_log, sizeof(local_dns_log));
 
+	skbinfo = nfq_get_skbinfo(nfa);
+	checksum_not_ready = (skbinfo & NFQA_SKB_CSUMNOTREADY) != 0U;
+
 	switch (packet_type) {
-	case PACKET_RA:
-		result = sanitize_ra(pktb, ip6h, &local_dns,
-		                     ctx->verbose ? endpoints : NULL,
-		                     ctx->verbose ? detail : NULL,
+	case Tins::PDU::ICMPv6:
+		result = sanitize_ra(&ipv6, &transport, &local_dns,
+		                     checksum_not_ready,
+		                     ctx->verbose ? endpoints : nullptr,
+		                     ctx->verbose ? detail : nullptr,
 		                     ctx->verbose ? sizeof(detail) : 0U,
 		                     error, sizeof(error));
 		break;
-	case PACKET_DHCPV6:
-		result = sanitize_dhcpv6(pktb, &local_dns,
-		                         ctx->verbose ? endpoints : NULL,
-		                         ctx->verbose ? detail : NULL,
+	case Tins::PDU::DHCPv6:
+		result = sanitize_dhcpv6(&ipv6, &transport, &local_dns,
+		                         checksum_not_ready,
+		                         ctx->verbose ? endpoints : nullptr,
+		                         ctx->verbose ? detail : nullptr,
 		                         ctx->verbose ? sizeof(detail) : 0U,
 		                         error, sizeof(error));
 		break;
-	case PACKET_OTHER:
+	case Tins::PDU::UNKNOWN:
 	default:
 		result = SANITIZE_UNCHANGED;
 		break;
@@ -733,24 +718,27 @@ static int packet_cb(struct nfq_q_handle *qh,
 	if (result == SANITIZE_ERROR) {
 		log_error("id=%u: %s; ACCEPT unchanged",
 		          id, error[0] ? error : "packet sanitizer failed");
-		return accept_unchanged(qh, id, pktb);
+		return accept_unchanged(qh, id);
 	}
 
-	if (result == SANITIZE_UNCHANGED) {
-		return accept_unchanged(qh, id, pktb);
+	if (result == SANITIZE_DROP) {
+		log_error("id=%u: %s", id, error[0] ? error : "packet policy DROP");
+		return drop_packet(qh, id);
 	}
+
+	if (result == SANITIZE_UNCHANGED)
+		return accept_unchanged(qh, id);
 
 	if (ctx->verbose)
 		log_info("id=%u local-dns=%s %s", id, local_dns_log, detail);
 
-	verdict = verdict_with_modified_ipv6(qh, id, pktb);
+	verdict = verdict_with_modified_ipv6(qh, id, &ipv6);
 	if (verdict < 0) {
-		log_error("id=%u: could not construct modified IPv6 verdict; "
+		log_error("id=%u: could not send modified IPv6 verdict; "
 		          "ACCEPT unchanged", id);
-		return accept_unchanged(qh, id, pktb);
+		return accept_unchanged(qh, id);
 	}
 
-	pktb_free(pktb);
 	return verdict;
 }
 
@@ -761,9 +749,9 @@ static void usage(const char *prog)
 
 int main(int argc, char **argv)
 {
-	struct app_ctx ctx = { 0 };
-	struct nfq_handle *h = NULL;
-	struct nfq_q_handle *qh = NULL;
+	struct app_ctx ctx = {};
+	struct nfq_handle *h = nullptr;
+	struct nfq_q_handle *qh = nullptr;
 	struct pollfd pfd;
 	int fd;
 	int rv;
@@ -787,8 +775,8 @@ int main(int argc, char **argv)
 	}
 
 	/* procd captures these streams; keep every message immediately visible. */
-	setvbuf(stdout, NULL, _IOLBF, 0);
-	setvbuf(stderr, NULL, _IONBF, 0);
+	setvbuf(stdout, nullptr, _IOLBF, 0);
+	setvbuf(stderr, nullptr, _IONBF, 0);
 
 	log_info("vxlan-ipv6-sanitize: starting");
 
@@ -799,21 +787,21 @@ int main(int argc, char **argv)
 	}
 
 	h = nfq_open();
-	if (h == NULL) {
+	if (h == nullptr) {
 		log_error("nfq_open() failed");
 		exit_status = EXIT_FAILURE;
 		goto out;
 	}
 
 	qh = nfq_create_queue(h, QUEUE_NUM, &packet_cb, &ctx);
-	if (qh == NULL) {
+	if (qh == nullptr) {
 		log_error("nfq_create_queue(%u) failed", QUEUE_NUM);
 		exit_status = EXIT_FAILURE;
 		goto out_nfq;
 	}
 
 	/*
-	 * nft's `queue ... bypass` only handles the no-listener case.  A full
+	 * nft's `queue ... bypass` only handles the no-listener case. A full
 	 * kernel NFQUEUE is dropped by default, so explicitly enable the kernel
 	 * fail-open flag as well.
 	 */
@@ -888,10 +876,10 @@ int main(int argc, char **argv)
 	log_info("vxlan-ipv6-sanitize: stopping");
 
 out_queue:
-	if (qh != NULL)
+	if (qh != nullptr)
 		nfq_destroy_queue(qh);
 out_nfq:
-	if (h != NULL)
+	if (h != nullptr)
 		nfq_close(h);
 out:
 	log_info("vxlan-ipv6-sanitize: exiting");

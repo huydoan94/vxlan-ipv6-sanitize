@@ -10,13 +10,14 @@
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 
-#define ADDR_LIST_BUFSIZE 512U
-#define MAC_TEXT_BUFSIZE (ETH_ALEN * 3U)
-#define CLIENT_ID_BUFSIZE 384U
-#define DETAIL_BUFSIZE 1536U
-#define ERROR_BUFSIZE 256U
-#define ENDPOINT_BUFSIZE 256U
-#define LOCAL_DNS_TEXT_BUFSIZE (INET6_ADDRSTRLEN + IF_NAMESIZE + 3U)
+constexpr size_t ADDR_LIST_BUFSIZE = 512U;
+constexpr size_t MAC_TEXT_BUFSIZE = ETH_ALEN * 3U;
+constexpr size_t CLIENT_ID_BUFSIZE = 384U;
+constexpr size_t DETAIL_BUFSIZE = 1536U;
+constexpr size_t ERROR_BUFSIZE = 256U;
+constexpr size_t ENDPOINT_BUFSIZE = 256U;
+constexpr size_t LOCAL_DNS_TEXT_BUFSIZE =
+	INET6_ADDRSTRLEN + IF_NAMESIZE + 3U;
 
 struct addr_list {
 	char buf[ADDR_LIST_BUFSIZE];
@@ -54,10 +55,11 @@ void format_ra_log_detail(char *detail, size_t detail_len,
                           unsigned int rdnss_options,
                           unsigned int rewritten,
                           unsigned int deduplicated,
-                          unsigned int dnssl_removed);
+                          unsigned int dnssl_removed,
+                          unsigned int pvd_removed);
 
 void format_dhcpv6_log_detail(char *detail, size_t detail_len,
-                              uint8_t msg_type,
+			      const char *message_name,
                               const char *endpoints,
                               const uint8_t *transaction_id,
                               const char *client_id,

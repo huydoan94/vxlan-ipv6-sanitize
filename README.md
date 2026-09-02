@@ -1,7 +1,7 @@
 # vxlan-ipv6-sanitize
 
 Small OpenWrt daemon that sanitizes IPv6 Router Advertisements and DHCPv6
-replies received through VXLAN before they reach local clients.
+server replies received through VXLAN before they reach local clients.
 
 ## Packet flow
 
@@ -18,16 +18,16 @@ bridge prerouting
   NFQUEUE 100
       |
       v
- classify packet
-   /    |    \
-  v     v     v
- RA   DHCPv6 other
- |      |      |
- v      v      |
-sanitize sanitize |
-   \    /      |
-    v  v        |
-   NF_ACCEPT <---+
+ libtins IPv6 parser
+   /      |       \
+  v       v        v
+ RA     DHCPv6    other
+ |        |         |
+ v        v         |
+sanitize sanitize   |
+   \      /         |
+    v    v          |
+    verdict <--------+
       |
       v
  Local bridge clients
@@ -38,19 +38,44 @@ sanitize sanitize |
 Router Advertisements:
 
 - Router Lifetime -> `0`
-- RDNSS -> one local bridge ULA (duplicate addresses/options removed)
-- DNS Search List (DNSSL, option 31) -> removed
+- RDNSS -> one local ULA
+- duplicate RDNSS addresses/options -> removed
+- DNSSL option 31 -> removed
+- PvD option 21 -> removed
 
-DHCPv6 server replies (`547 -> 546`):
+DHCPv6 Advertise/Reply packets (`547 -> 546`):
 
-- DNS Recursive Name Server option 23 -> one local bridge ULA (duplicates removed)
+- DNS Recursive Name Server option 23 -> one local ULA
+- duplicate DNS addresses/options -> removed
 - Domain Search List option 24 -> removed
 
-Other packet contents are left unchanged. The daemon classifies each queued
-packet as RA, DHCPv6, or unsupported before running a sanitizer. Malformed or
-unsupported packets are accepted without modification.
+The local DNS address is the first ULA (`fc00::/7`) found on the ingress
+interface or its bridge master.
+
+## Packet handling
+
+- IPv6 extension-header traversal and transport discovery are delegated to libtins.
+- Routing, AH, ESP, Mobility, jumbograms, and other unsupported layouts pass unchanged.
+- Fragmented target RA/DHCPv6 packets are dropped.
+- If the IPv6 declared length exceeds the bytes delivered by NFQUEUE, the
+  packet is dropped.
+- If IPv6 or UDP declares a shorter region than NFQUEUE captured, only the
+  declared region is sanitized. Bytes after it are preserved unchanged.
+- If UDP declares more bytes than are available, the packet is dropped.
+- A valid incoming checksum remains valid after sanitization.
+- An invalid incoming checksum remains deliberately invalid after sanitization.
+- NFQUEUE checksum-not-ready packets receive a correct checksum after editing.
+- DHCPv6 Authentication option 11 and SEND RSA Signature option 12 are left
+  untouched. If a protected packet would require sanitization, it is dropped;
+  if no change is needed, it passes unchanged.
+- Other malformed or unsupported packets pass unchanged.
 
 ## Build
+
+The daemon uses OpenWrt's `libtins` package for IPv6 protocol parsing, protocol
+constants, interface/address access, formatting, and checksum helpers. It only
+needs libtins' core library; libpcap support can be disabled in libtins
+configuration if it is not otherwise needed on the target.
 
 Add the package to your OpenWrt source tree, then run:
 
@@ -93,9 +118,9 @@ table bridge vxlan_ipv6_sanitize {
 }
 ```
 
-The daemon listens on NFQUEUE `100`. For bridge-family queues, Linux exposes
-the IPv6 packet through `NFQA_PAYLOAD`; the Ethernet header is carried
-separately by NFQUEUE and is left unchanged by this daemon.
+The daemon accepts only bridge-family packets from NFQUEUE `100`. Linux exposes
+the IPv6 packet through `NFQA_PAYLOAD`; bridge L2 metadata is kept separately by
+the kernel.
 
 ## Configuration
 
@@ -112,7 +137,7 @@ config sanitizer 'main'
     option verbose '0'
 ```
 
-Enable verbose logging:
+Enable verbose packet logging:
 
 ```sh
 uci set vxlan-ipv6-sanitize.main.verbose='1'
@@ -130,10 +155,12 @@ logread -f -e vxlan-ipv6-sanitize
 
 ```text
 src/
-├── vxlan-ipv6-sanitize.c   daemon and packet sanitizers
-├── helper.c                packet/network helpers
+├── vxlan-ipv6-sanitize.cpp daemon and packet sanitizers
+├── helper.cpp              packet/network helpers
 ├── helper.h
-├── logging.c               logging and log formatting
+├── packet_parser.cpp       libtins IPv6 transport parser
+├── packet_parser.h         parser interface
+├── logging.cpp             logging and log formatting
 └── logging.h
 ```
 
