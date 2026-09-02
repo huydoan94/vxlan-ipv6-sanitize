@@ -27,12 +27,9 @@ struct duid_ll_ethernet_wire {
 	uint8_t mac[ETH_ALEN];
 } __attribute__((packed));
 
-void log_info(bool verbose, const char *fmt, ...)
+void log_info(const char *fmt, ...)
 {
 	va_list args;
-
-	if (!verbose)
-		return;
 
 	va_start(args, fmt);
 	vfprintf(stdout, fmt, args);
@@ -75,7 +72,7 @@ static void format_mac(const uint8_t *mac, char *buf, size_t len)
 	buf[0] = '\0';
 	for (i = 0; i < ETH_ALEN; i++) {
 		int written = snprintf(buf + used, len - used, "%s%02x",
-				       i == 0 ? "" : ":", mac[i]);
+		                       i == 0 ? "" : ":", mac[i]);
 
 		if (written < 0 || (size_t)written >= len - used)
 			return;
@@ -84,7 +81,7 @@ static void format_mac(const uint8_t *mac, char *buf, size_t len)
 }
 
 static bool ipv6_equals_literal(const struct in6_addr *addr,
-				const char *literal)
+                                const char *literal)
 {
 	struct in6_addr expected;
 
@@ -94,15 +91,23 @@ static bool ipv6_equals_literal(const struct in6_addr *addr,
 	return memcmp(addr, &expected, sizeof(expected)) == 0;
 }
 
+static void format_ipv6(const struct in6_addr *addr, char *buf, size_t len)
+{
+	if (len == 0)
+		return;
+
+	if (inet_ntop(AF_INET6, addr, buf, (socklen_t)len) == NULL)
+		snprintf(buf, len, "?");
+}
+
 static void format_destination(const struct in6_addr *addr,
-			       char *buf, size_t len)
+                               char *buf, size_t len)
 {
 	static const char all_nodes[] = "ff02::1";
 	static const char all_dhcp_agents[] = "ff02::1:2";
 	char ip[INET6_ADDRSTRLEN];
 
-	if (inet_ntop(AF_INET6, addr, ip, sizeof(ip)) == NULL)
-		snprintf(ip, sizeof(ip), "?");
+	format_ipv6(addr, ip, sizeof(ip));
 
 	if (ipv6_equals_literal(addr, all_nodes))
 		snprintf(buf, len, "%s(all-nodes)", ip);
@@ -112,32 +117,35 @@ static void format_destination(const struct in6_addr *addr,
 		snprintf(buf, len, "%s", ip);
 }
 
-void format_endpoints(const uint8_t *packet, size_t packet_len,
-		      size_t ipv6_offset, const struct ip6_hdr *ip6h,
-		      char *buf, size_t len)
+void format_endpoints(const struct bridge_packet_view *packet,
+                      const struct ip6_hdr *ip6h, char *buf, size_t len)
 {
+	const struct ethhdr *ethernet =
+		(const struct ethhdr *)packet->ethernet_frame;
 	char src[INET6_ADDRSTRLEN];
 	char dst[DESTINATION_TEXT_BUFSIZE];
+	char src_mac[MAC_TEXT_BUFSIZE];
+	char dst_mac[MAC_TEXT_BUFSIZE];
 
-	if (inet_ntop(AF_INET6, &ip6h->ip6_src, src, sizeof(src)) == NULL)
-		snprintf(src, sizeof(src), "?");
+	format_ipv6(&ip6h->ip6_src, src, sizeof(src));
 	format_destination(&ip6h->ip6_dst, dst, sizeof(dst));
+	format_mac(ethernet->h_source, src_mac, sizeof(src_mac));
+	format_mac(ethernet->h_dest, dst_mac, sizeof(dst_mac));
 
-	if (ipv6_offset >= sizeof(struct ethhdr) &&
-	    packet_len >= sizeof(struct ethhdr)) {
-		char src_mac[MAC_TEXT_BUFSIZE];
-		char dst_mac[MAC_TEXT_BUFSIZE];
+	snprintf(buf, len, "from=%s(%s) to=%s(%s)",
+	         src, src_mac, dst, dst_mac);
+}
 
-		format_mac(packet + offsetof(struct ethhdr, h_source),
-			   src_mac, sizeof(src_mac));
-		format_mac(packet + offsetof(struct ethhdr, h_dest),
-			   dst_mac, sizeof(dst_mac));
-		snprintf(buf, len, "from=%s(%s) to=%s(%s)",
-			 src, src_mac, dst, dst_mac);
-		return;
-	}
+void format_local_dns_log(const struct in6_addr *dns, const char *ifname,
+                          char *buf, size_t len)
+{
+	char ip[INET6_ADDRSTRLEN];
 
-	snprintf(buf, len, "from=%s to=%s", src, dst);
+	format_ipv6(dns, ip, sizeof(ip));
+	if (ifname != NULL && ifname[0] != '\0')
+		snprintf(buf, len, "%s(%s)", ip, ifname);
+	else
+		snprintf(buf, len, "%s", ip);
 }
 
 void addr_list_init(struct addr_list *list)
@@ -148,7 +156,7 @@ void addr_list_init(struct addr_list *list)
 	list->truncated = false;
 }
 
-void addr_list_append(struct addr_list *list, const struct in6_addr *addr)
+static void addr_list_append(struct addr_list *list, const struct in6_addr *addr)
 {
 	char ip[INET6_ADDRSTRLEN];
 	char piece[INET6_ADDRSTRLEN + sizeof(",")];
@@ -172,6 +180,21 @@ void addr_list_append(struct addr_list *list, const struct in6_addr *addr)
 	list->first = false;
 }
 
+void addr_list_append_wire_ipv6(struct addr_list *list,
+                                const uint8_t *data, size_t data_len)
+{
+	const uint8_t *cursor = data;
+	const uint8_t *end = data + data_len;
+
+	while (cursor < end) {
+		struct in6_addr addr;
+
+		memcpy(&addr, cursor, sizeof(addr));
+		addr_list_append(list, &addr);
+		cursor += sizeof(addr);
+	}
+}
+
 static const char *addr_list_finish(struct addr_list *list)
 {
 	const char *suffix = list->truncated ? ",...]" : "]";
@@ -192,8 +215,8 @@ static const char *addr_list_finish(struct addr_list *list)
 	return list->buf;
 }
 
-void format_hex(const uint8_t *data, size_t data_len,
-		char *buf, size_t buf_len)
+static void format_hex(const uint8_t *data, size_t data_len,
+                       char *buf, size_t buf_len)
 {
 	static const char hex[] = "0123456789abcdef";
 	static const char ellipsis[] = "...";
@@ -219,8 +242,8 @@ void format_hex(const uint8_t *data, size_t data_len,
 	buf[out] = '\0';
 }
 
-void duid_ethernet_mac(const uint8_t *duid, size_t len,
-		       char *buf, size_t buf_len)
+static void duid_ethernet_mac(const uint8_t *duid, size_t len,
+                              char *buf, size_t buf_len)
 {
 	const uint8_t *mac = NULL;
 	uint16_t duid_type;
@@ -235,7 +258,7 @@ void duid_ethernet_mac(const uint8_t *duid, size_t len,
 
 	duid_type = read_be16(duid + offsetof(struct duid_ll_ethernet_wire, type));
 	hw_type = read_be16(duid +
-			     offsetof(struct duid_ll_ethernet_wire, hardware_type));
+	                    offsetof(struct duid_ll_ethernet_wire, hardware_type));
 	if (hw_type != HWTYPE_ETHERNET)
 		return;
 
@@ -246,6 +269,14 @@ void duid_ethernet_mac(const uint8_t *duid, size_t len,
 
 	if (mac != NULL)
 		format_mac(mac, buf, buf_len);
+}
+
+void format_dhcpv6_client_log_fields(const uint8_t *duid, size_t len,
+                                     char *client_id, size_t client_id_len,
+                                     char *client_mac, size_t client_mac_len)
+{
+	format_hex(duid, len, client_id, client_id_len);
+	duid_ethernet_mac(duid, len, client_mac, client_mac_len);
 }
 
 static const char *dhcpv6_msg_name(uint8_t type)
@@ -280,41 +311,46 @@ static uint32_t read_transaction_id(const uint8_t *transaction_id)
 }
 
 void format_ra_log_detail(char *detail, size_t detail_len,
-			  const char *endpoints,
-			  uint16_t original_lifetime,
-			  uint16_t new_lifetime,
-			  struct addr_list *original_rdnss,
-			  struct addr_list *modified_rdnss,
-			  unsigned int rewritten)
+                          const char *endpoints,
+                          uint16_t original_lifetime,
+                          uint16_t new_lifetime,
+                          struct addr_list *original_rdnss,
+                          unsigned int rdnss_options,
+                          unsigned int rewritten,
+                          unsigned int deduplicated,
+                          unsigned int dnssl_removed)
 {
 	snprintf(detail, detail_len,
-		 "type=RA %s router-lifetime=%u->%u rdnss=%s->%s rdnss-rewritten=%u",
-		 endpoints, original_lifetime, new_lifetime,
-		 addr_list_finish(original_rdnss),
-		 addr_list_finish(modified_rdnss), rewritten);
+	         "type=RA %s router-lifetime=%u->%u rdnss=%s "
+	         "rdnss-options=%u rdnss-rewritten=%u rdnss-deduplicated=%u "
+	         "dnssl-removed=%u",
+	         endpoints, original_lifetime, new_lifetime,
+	         addr_list_finish(original_rdnss), rdnss_options, rewritten,
+	         deduplicated, dnssl_removed);
 }
 
 void format_dhcpv6_log_detail(char *detail, size_t detail_len,
-			      uint8_t msg_type,
-			      const char *endpoints,
-			      const uint8_t *transaction_id,
-			      const char *client_id,
-			      const char *client_mac,
-			      struct addr_list *original_dns,
-			      struct addr_list *modified_dns,
-			      unsigned int dns_options,
-			      unsigned int rewritten)
+                              uint8_t msg_type,
+                              const char *endpoints,
+                              const uint8_t *transaction_id,
+                              const char *client_id,
+                              const char *client_mac,
+                              struct addr_list *original_dns,
+                              unsigned int dns_options,
+                              unsigned int rewritten,
+                              unsigned int deduplicated,
+                              unsigned int domain_search_removed)
 {
 	uint32_t xid = read_transaction_id(transaction_id);
 
 	snprintf(detail, detail_len,
-		 "type=DHCPv6-%s %s xid=0x%0*x client-id=%s client-mac=%s "
-		 "dns=%s->%s dns-options=%u dns-rewritten=%u",
-		 dhcpv6_msg_name(msg_type), endpoints,
-		 (int)(DHCPV6_TRANSACTION_ID_LEN * 2U), xid,
-		 client_id[0] ? client_id : "-",
-		 client_mac[0] ? client_mac : "-",
-		 addr_list_finish(original_dns),
-		 addr_list_finish(modified_dns),
-		 dns_options, rewritten);
+	         "type=DHCPv6-%s %s xid=0x%0*x client-id=%s client-mac=%s "
+	         "dns=%s dns-options=%u dns-rewritten=%u dns-deduplicated=%u "
+	         "domain-search-removed=%u",
+	         dhcpv6_msg_name(msg_type), endpoints,
+	         (int)(DHCPV6_TRANSACTION_ID_LEN * 2U), xid,
+	         client_id[0] ? client_id : "-",
+	         client_mac[0] ? client_mac : "-",
+	         addr_list_finish(original_dns),
+	         dns_options, rewritten, deduplicated, domain_search_removed);
 }

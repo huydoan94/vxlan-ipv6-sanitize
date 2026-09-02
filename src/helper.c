@@ -109,8 +109,8 @@ static int find_ula_on_interface(const char *ifname, struct in6_addr *result)
 }
 
 int resolve_local_dns(uint32_t indev, uint32_t physindev,
-		      struct in6_addr *dns,
-		      char *source_ifname, size_t source_ifname_len)
+                      struct in6_addr *dns,
+                      char *source_ifname, size_t source_ifname_len)
 {
 	char ifname[IF_NAMESIZE];
 	char master[IF_NAMESIZE];
@@ -119,6 +119,7 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
 
 	for (i = 0; i < ARRAY_SIZE(candidates); i++) {
 		uint32_t ifindex = candidates[i];
+		const char *resolved_ifname = NULL;
 
 		if (ifindex == 0)
 			continue;
@@ -127,26 +128,27 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
 		if (if_indextoname(ifindex, ifname) == NULL)
 			continue;
 
-		if (find_ula_on_interface(ifname, dns) == 0) {
-			snprintf(source_ifname, source_ifname_len, "%s", ifname);
-			return 0;
-		}
+		if (find_ula_on_interface(ifname, dns) == 0)
+			resolved_ifname = ifname;
+		else if (get_bridge_master(ifname, master, sizeof(master)) == 0 &&
+		         find_ula_on_interface(master, dns) == 0)
+			resolved_ifname = master;
 
-		if (get_bridge_master(ifname, master, sizeof(master)) == 0 &&
-		    find_ula_on_interface(master, dns) == 0) {
-			snprintf(source_ifname, source_ifname_len, "%s", master);
-			return 0;
-		}
+		if (resolved_ifname == NULL)
+			continue;
+
+		if (source_ifname != NULL && source_ifname_len != 0)
+			snprintf(source_ifname, source_ifname_len, "%s", resolved_ifname);
+		return 0;
 	}
 
 	return -1;
 }
 
 /*
- * NFQUEUE bridge-family payloads can be either L3-only or Ethernet frames.
- * libnetfilter_queue's AF_BRIDGE pkt_buff parser does not cover VLAN stacks,
- * so keep only this small L2 locator and hand the IPv6 packet itself to the
- * library for all subsequent protocol work.
+ * Parse the NFQUEUE bridge-family payload as one Ethernet frame containing a
+ * complete IPv6 packet. VLAN tags are part of the L2 prefix; callers do not
+ * need to calculate or carry an IPv6 offset.
  */
 static bool has_ipv6_version(const uint8_t *packet)
 {
@@ -162,80 +164,95 @@ static bool is_vlan_ethertype(uint16_t ethertype)
 	       ethertype == ETH_P_QINQ1;
 }
 
-int locate_ipv6(const uint8_t *packet, size_t packet_len,
-		size_t *ipv6_offset, size_t *ipv6_len)
+int parse_bridge_ipv6_frame(uint8_t *frame, size_t frame_len,
+                            struct bridge_packet_view *view)
 {
 	const size_t ethernet_proto_offset = offsetof(struct ethhdr, h_proto);
 	const size_t vlan_proto_offset =
 		offsetof(struct vlan_tag_wire, encapsulated_proto);
 	const size_t ipv6_payload_len_offset = offsetof(struct ip6_hdr, ip6_plen);
+	uint8_t *ipv6;
+	uint8_t *frame_end;
 	uint16_t ethertype;
-	size_t off;
 	uint16_t payload_len;
+	size_t l2_len;
+	size_t ipv6_len;
 
-	if (packet_len >= sizeof(struct ip6_hdr) && has_ipv6_version(packet)) {
-		off = 0;
-	} else {
-		if (packet_len < sizeof(struct ethhdr))
+	if (frame == NULL || view == NULL || frame_len < sizeof(struct ethhdr))
+		return -1;
+
+	frame_end = frame + frame_len;
+	ethertype = read_be16(frame + ethernet_proto_offset);
+	l2_len = sizeof(struct ethhdr);
+
+	while (is_vlan_ethertype(ethertype)) {
+		if (sizeof(struct vlan_tag_wire) > frame_len - l2_len)
 			return -1;
 
-		ethertype = read_be16(packet + ethernet_proto_offset);
-		off = sizeof(struct ethhdr);
-
-		while (is_vlan_ethertype(ethertype)) {
-			if (off + sizeof(struct vlan_tag_wire) > packet_len)
-				return -1;
-
-			ethertype = read_be16(packet + off + vlan_proto_offset);
-			off += sizeof(struct vlan_tag_wire);
-		}
-
-		if (ethertype != ETH_P_IPV6)
-			return -1;
+		ethertype = read_be16(frame + l2_len + vlan_proto_offset);
+		l2_len += sizeof(struct vlan_tag_wire);
 	}
 
-	if (off + sizeof(struct ip6_hdr) > packet_len)
-		return -1;
-	if (!has_ipv6_version(packet + off))
+	if (ethertype != ETH_P_IPV6 || sizeof(struct ip6_hdr) > frame_len - l2_len)
 		return -1;
 
-	payload_len = read_be16(packet + off + ipv6_payload_len_offset);
+	ipv6 = frame + l2_len;
+	if (!has_ipv6_version(ipv6))
+		return -1;
+
+	payload_len = read_be16(ipv6 + ipv6_payload_len_offset);
 	if (payload_len == 0)
 		return -1; /* IPv6 jumbograms are outside this daemon's scope. */
 
-	*ipv6_len = sizeof(struct ip6_hdr) + (size_t)payload_len;
-	if (*ipv6_len > packet_len - off)
+	ipv6_len = sizeof(struct ip6_hdr) + (size_t)payload_len;
+	if (ipv6_len > (size_t)(frame_end - ipv6))
 		return -1;
 
-	*ipv6_offset = off;
+	view->ethernet_frame = frame;
+	view->ethernet_frame_len = frame_len;
+	view->ipv6_packet = ipv6;
+	view->ipv6_packet_len = ipv6_len;
+	view->trailing_data = ipv6 + ipv6_len;
+	view->trailing_data_len = (size_t)(frame_end - view->trailing_data);
 	return 0;
 }
 
-int validate_nd_options(const uint8_t *options, size_t options_len)
+void option_compactor_init(struct option_compactor *compactor, uint8_t *start)
 {
-	const uint8_t *ptr = options;
-	size_t remaining = options_len;
+	compactor->start = start;
+	compactor->read = start;
+	compactor->write = start;
+}
 
-	while (remaining > 0) {
-		const struct nd_option_header_wire *header;
-		size_t opt_len;
+void option_compactor_keep(struct option_compactor *compactor,
+                           size_t source_len)
+{
+	if (compactor->write != compactor->read)
+		memmove(compactor->write, compactor->read, source_len);
 
-		if (remaining < sizeof(*header))
-			return -1;
+	compactor->read += source_len;
+	compactor->write += source_len;
+}
 
-		header = (const struct nd_option_header_wire *)ptr;
-		if (header->length_units == 0)
-			return -1;
+void option_compactor_skip(struct option_compactor *compactor,
+                           size_t source_len)
+{
+	compactor->read += source_len;
+}
 
-		opt_len = (size_t)header->length_units * NDP_OPTION_LEN_UNIT_OCTETS;
-		if (opt_len > remaining)
-			return -1;
+void option_compactor_keep_prefix(struct option_compactor *compactor,
+                                  size_t keep_len, size_t source_len)
+{
+	if (compactor->write != compactor->read)
+		memmove(compactor->write, compactor->read, keep_len);
 
-		ptr += opt_len;
-		remaining -= opt_len;
-	}
+	compactor->read += source_len;
+	compactor->write += keep_len;
+}
 
-	return 0;
+size_t option_compactor_output_len(const struct option_compactor *compactor)
+{
+	return (size_t)(compactor->write - compactor->start);
 }
 
 static uint32_t checksum_fold(uint32_t sum)
@@ -267,7 +284,7 @@ static uint32_t checksum_add(uint32_t sum, const uint8_t *buf, size_t len)
  * ICMPv6 checksum helper. Keep this one small checksum routine for RA only.
  */
 uint16_t icmpv6_checksum(const struct ip6_hdr *ip6h,
-			 const uint8_t *icmp, size_t icmp_len)
+                         const uint8_t *icmp, size_t icmp_len)
 {
 	struct ipv6_pseudo_header pseudo = {
 		.source = ip6h->ip6_src,

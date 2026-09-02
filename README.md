@@ -14,16 +14,20 @@ Remote VXLAN peer
       v
 bridge prerouting
       |
-      |  RA / DHCPv6 reply
       v
   NFQUEUE 100
       |
       v
-vxlan-ipv6-sanitize
-      |
-      |  rewrite DNS / RA router lifetime
-      v
-   NF_ACCEPT
+ classify packet
+   /    |    \
+  v     v     v
+ RA   DHCPv6 other
+ |      |      |
+ v      v      |
+sanitize sanitize |
+   \    /      |
+    v  v        |
+   NF_ACCEPT <---+
       |
       v
  Local bridge clients
@@ -34,14 +38,17 @@ vxlan-ipv6-sanitize
 Router Advertisements:
 
 - Router Lifetime -> `0`
-- RDNSS addresses -> local bridge ULA
+- RDNSS -> one local bridge ULA (duplicate addresses/options removed)
+- DNS Search List (DNSSL, option 31) -> removed
 
 DHCPv6 server replies (`547 -> 546`):
 
-- DNS Recursive Name Server option 23 -> local bridge ULA
+- DNS Recursive Name Server option 23 -> one local bridge ULA (duplicates removed)
+- Domain Search List option 24 -> removed
 
-Other packet contents are left unchanged. Malformed or unsupported packets are
-accepted without modification.
+Other packet contents are left unchanged. The daemon classifies each queued
+packet as RA, DHCPv6, or unsupported before running a sanitizer. Malformed or
+unsupported packets are accepted without modification.
 
 ## Build
 
@@ -86,7 +93,9 @@ table bridge vxlan_ipv6_sanitize {
 }
 ```
 
-The daemon listens on NFQUEUE `100`.
+The daemon listens on NFQUEUE `100` and intentionally expects a bridge-family
+NFQUEUE payload containing a complete Ethernet frame. VLAN-tagged IPv6 frames
+are supported.
 
 ## Configuration
 

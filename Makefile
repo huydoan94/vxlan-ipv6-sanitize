@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.6
+PKG_VERSION:=1.2.17
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -20,7 +20,8 @@ define Package/vxlan-ipv6-sanitize/description
 	Low-memory NFQUEUE sanitizer for bridged VXLAN IPv6 configuration
 	traffic. It preserves Router Advertisement prefix/route information and
 	DHCPv6 address assignments, neutralizes remote RA default-router lifetime,
-	and rewrites RA RDNSS and DHCPv6 DNS option 23 to the local ingress ULA.
+	normalizes RA RDNSS and DHCPv6 DNS option 23 to one local ingress ULA,
+	and removes advertised DNS search lists.
 endef
 
 define Package/vxlan-ipv6-sanitize/conffiles
