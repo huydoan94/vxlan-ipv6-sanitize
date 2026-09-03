@@ -224,8 +224,7 @@ sanitize_ra(struct ipv6_packet_view *packet,
 	                                   checksum_not_ready);
 
 	original_lifetime = ntohs(ra->nd_ra_router_lifetime);
-	router_lifetime_changed =
-		original_lifetime != RA_NEUTRAL_ROUTER_LIFETIME;
+	router_lifetime_changed = original_lifetime != RA_NEUTRAL_ROUTER_LIFETIME;
 	if (router_lifetime_changed)
 		ra->nd_ra_router_lifetime = htons(RA_NEUTRAL_ROUTER_LIFETIME);
 
@@ -280,20 +279,17 @@ sanitize_ra(struct ipv6_packet_view *packet,
 
 		if (header->nd_opt_type == Tins::ICMPv6::RECURSIVE_DNS_SERV) {
 			const size_t fixed_len = sizeof(struct rdnss_option_wire);
-			const size_t single_dns_len =
-				fixed_len + sizeof(struct in6_addr);
+			const size_t single_dns_len = fixed_len + sizeof(struct in6_addr);
 			size_t address_bytes;
 
-			if (opt_len < single_dns_len ||
-			    (opt_len - fixed_len) % sizeof(struct in6_addr) != 0) {
+			if (opt_len < single_dns_len || (opt_len - fixed_len) % sizeof(struct in6_addr) != 0) {
 				set_error(error, error_len,
 				          "invalid RDNSS option length %zu", opt_len);
 				return SANITIZE_ERROR;
 			}
 
 			address_bytes = opt_len - fixed_len;
-			rdnss_addresses +=
-				(unsigned int)(address_bytes / sizeof(struct in6_addr));
+			rdnss_addresses += (unsigned int)(address_bytes / sizeof(struct in6_addr));
 
 			if (log_details) {
 				rdnss_options++;
@@ -309,8 +305,7 @@ sanitize_ra(struct ipv6_packet_view *packet,
 
 			rdnss_rewritten = memcmp(opt + fixed_len, local_dns,
 			                         sizeof(*local_dns)) != 0;
-			header->nd_opt_len =
-				(uint8_t)(single_dns_len / NDP_OPTION_LEN_UNIT_OCTETS);
+			header->nd_opt_len = (uint8_t)(single_dns_len / NDP_OPTION_LEN_UNIT_OCTETS);
 			memcpy(opt + fixed_len, local_dns, sizeof(*local_dns));
 			option_compactor_keep_prefix(&compactor, single_dns_len,
 			                             opt_len);
@@ -321,14 +316,8 @@ sanitize_ra(struct ipv6_packet_view *packet,
 		option_compactor_keep(&compactor, opt_len);
 	}
 
-	rdnss_deduplicated =
-		rdnss_addresses > 1U ? rdnss_addresses - 1U : 0U;
-	changed =
-		router_lifetime_changed ||
-		rdnss_rewritten != 0 ||
-		rdnss_deduplicated != 0 ||
-		dnssl_removed != 0 ||
-		pvd_removed != 0;
+	rdnss_deduplicated = rdnss_addresses > 1U ? rdnss_addresses - 1U : 0U;
+	changed = router_lifetime_changed || rdnss_rewritten != 0 || rdnss_deduplicated != 0 || dnssl_removed != 0 || pvd_removed != 0;
 
 	if (!changed)
 		return SANITIZE_UNCHANGED;
@@ -425,8 +414,7 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 
 	message = (struct dhcpv6_direct_header_wire *)dhcp;
 	msg_type = static_cast<Tins::DHCPv6::MessageType>(message->message_type);
-	if (msg_type != Tins::DHCPv6::ADVERTISE &&
-	    msg_type != Tins::DHCPv6::REPLY)
+	if (msg_type != Tins::DHCPv6::ADVERTISE && msg_type != Tins::DHCPv6::REPLY)
 		return SANITIZE_UNCHANGED;
 	message_name = msg_type == Tins::DHCPv6::ADVERTISE ? "Advertise" : "Reply";
 
@@ -452,8 +440,7 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 			continue;
 		}
 
-		if (log_details && option.code == Tins::DHCPv6::CLIENTID &&
-		    client_id[0] == '\0') {
+		if (log_details && option.code == Tins::DHCPv6::CLIENTID && client_id[0] == '\0') {
 			format_dhcpv6_client_log_fields(option.data, option.data_len,
 			                                client_id, sizeof(client_id),
 			                                client_mac, sizeof(client_mac));
@@ -468,21 +455,17 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 		if (option.code == Tins::DHCPv6::DNS_SERVERS) {
 			struct dhcpv6_option_header_wire *header;
 			uint8_t *opt;
-			const size_t fixed_len =
-				sizeof(struct dhcpv6_option_header_wire);
-			const size_t single_dns_len =
-				fixed_len + sizeof(struct in6_addr);
+			const size_t fixed_len = sizeof(struct dhcpv6_option_header_wire);
+			const size_t single_dns_len = fixed_len + sizeof(struct in6_addr);
 
-			if (option.data_len == 0 ||
-			    option.data_len % sizeof(struct in6_addr) != 0) {
+			if (option.data_len == 0 || option.data_len % sizeof(struct in6_addr) != 0) {
 				set_error(error, error_len,
 				          "invalid DHCPv6 DNS option length %u",
 				          option.data_len);
 				return SANITIZE_ERROR;
 			}
 
-			dns_addresses +=
-				(unsigned int)(option.data_len / sizeof(struct in6_addr));
+			dns_addresses += (unsigned int)(option.data_len / sizeof(struct in6_addr));
 
 			if (log_details) {
 				dns_options++;
@@ -512,10 +495,7 @@ sanitize_dhcpv6(struct ipv6_packet_view *packet,
 	}
 
 	dns_deduplicated = dns_addresses > 1U ? dns_addresses - 1U : 0U;
-	changed =
-		dns_rewritten != 0 ||
-		dns_deduplicated != 0 ||
-		domain_search_removed != 0;
+	changed = dns_rewritten != 0 || dns_deduplicated != 0 || domain_search_removed != 0;
 
 	if (!changed)
 		return SANITIZE_UNCHANGED;

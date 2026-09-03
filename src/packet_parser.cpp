@@ -26,8 +26,7 @@ enum ipv6_transport_result
 parse_ipv6_transport(uint8_t *packet, size_t packet_len,
                      struct ipv6_transport_view *transport)
 {
-	if (packet == nullptr || transport == nullptr ||
-	    packet_len > std::numeric_limits<uint32_t>::max())
+	if (packet == nullptr || transport == nullptr || packet_len > std::numeric_limits<uint32_t>::max())
 		return IPV6_TRANSPORT_MALFORMED;
 
 	transport->packet_type = Tins::PDU::UNKNOWN;
@@ -51,13 +50,10 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
 		if (has_unsupported_extension(ipv6))
 			return IPV6_TRANSPORT_UNSUPPORTED;
 
-		if (const Tins::IPv6::ext_header *fragment =
-		        ipv6.search_header(Tins::IPv6::FRAGMENT)) {
-			const Tins::IPv6::fragment_header fragment_info =
-				Tins::IPv6::fragment_header::from_extension_header(*fragment);
+		if (const Tins::IPv6::ext_header *fragment = ipv6.search_header(Tins::IPv6::FRAGMENT)) {
+			const Tins::IPv6::fragment_header fragment_info = Tins::IPv6::fragment_header::from_extension_header(*fragment);
 
-			if (fragment_info.fragment_offset != 0 ||
-			    fragment_info.more_fragments) {
+			if (fragment_info.fragment_offset != 0 || fragment_info.more_fragments) {
 				transport->fragmented = true;
 				return IPV6_TRANSPORT_FOUND;
 			}
@@ -76,8 +72,7 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
 
 		switch (inner->pdu_type()) {
 		case Tins::PDU::ICMPv6: {
-			const Tins::ICMPv6 *icmpv6 =
-				static_cast<const Tins::ICMPv6 *>(inner);
+			const Tins::ICMPv6 *icmpv6 = static_cast<const Tins::ICMPv6 *>(inner);
 
 			if (icmpv6->type() == Tins::ICMPv6::ROUTER_ADVERT)
 				transport->packet_type = Tins::PDU::ICMPv6;

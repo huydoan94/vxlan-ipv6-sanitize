@@ -163,9 +163,17 @@ uci commit vxlan-ipv6-sanitize
 logread -f -e vxlan-ipv6-sanitize
 ```
 
+## Formatting
+
+The included `.clang-format` keeps tab indentation and Linux-style braces while
+setting `ColumnLimit: 0`. Variable declarations stay joined to their initializer
+expressions, while longer function calls—including initializer calls—and longer
+declarations and definitions retain aligned multi-line argument layouts.
+
 ## Source layout
 
 ```text
+.clang-format             project C++ formatting rules
 src/
 ├── vxlan-ipv6-sanitize.cpp daemon and packet sanitizers
 ├── helper.cpp              packet/network helpers

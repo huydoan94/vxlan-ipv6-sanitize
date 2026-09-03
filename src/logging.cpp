@@ -14,8 +14,7 @@
 #include <tins/hw_address.h>
 #include <tins/ipv6_address.h>
 
-constexpr size_t DESTINATION_TEXT_BUFSIZE =
-	INET6_ADDRSTRLEN + sizeof("(all-dhcp-agents)");
+constexpr size_t DESTINATION_TEXT_BUFSIZE = INET6_ADDRSTRLEN + sizeof("(all-dhcp-agents)");
 
 void log_info(const char *fmt, ...)
 {
@@ -125,8 +124,7 @@ static void addr_list_append(struct addr_list *list, const struct in6_addr *addr
 
 	n = snprintf(piece, sizeof(piece), "%s%s", list->first ? "" : ",",
 	             ip.c_str());
-	if (n < 0 || (size_t)n >= sizeof(piece) ||
-	    list->len + (size_t)n + sizeof(",...]") > sizeof(list->buf)) {
+	if (n < 0 || (size_t)n >= sizeof(piece) || list->len + (size_t)n + sizeof(",...]") > sizeof(list->buf)) {
 		list->truncated = true;
 		return;
 	}
@@ -212,21 +210,17 @@ static void duid_ethernet_mac(const uint8_t *duid, size_t len,
 		return;
 
 	duid_type = read_be16(duid);
-	if (duid_type == Tins::DHCPv6::duid_llt::duid_id &&
-	    len == sizeof(uint16_t) * 2U + sizeof(uint32_t) + ETH_ALEN) {
-		const Tins::DHCPv6::duid_llt value =
-			Tins::DHCPv6::duid_llt::from_bytes(
-				duid + sizeof(uint16_t),
-				static_cast<uint32_t>(len - sizeof(uint16_t)));
+	if (duid_type == Tins::DHCPv6::duid_llt::duid_id && len == sizeof(uint16_t) * 2U + sizeof(uint32_t) + ETH_ALEN) {
+		const Tins::DHCPv6::duid_llt value = Tins::DHCPv6::duid_llt::from_bytes(
+			duid + sizeof(uint16_t),
+			static_cast<uint32_t>(len - sizeof(uint16_t)));
 
 		if (value.hw_type == ARPHRD_ETHER)
 			format_mac(value.lladdress.data(), buf, buf_len);
-	} else if (duid_type == Tins::DHCPv6::duid_ll::duid_id &&
-	           len == sizeof(uint16_t) * 2U + ETH_ALEN) {
-		const Tins::DHCPv6::duid_ll value =
-			Tins::DHCPv6::duid_ll::from_bytes(
-				duid + sizeof(uint16_t),
-				static_cast<uint32_t>(len - sizeof(uint16_t)));
+	} else if (duid_type == Tins::DHCPv6::duid_ll::duid_id && len == sizeof(uint16_t) * 2U + ETH_ALEN) {
+		const Tins::DHCPv6::duid_ll value = Tins::DHCPv6::duid_ll::from_bytes(
+			duid + sizeof(uint16_t),
+			static_cast<uint32_t>(len - sizeof(uint16_t)));
 
 		if (value.hw_type == ARPHRD_ETHER)
 			format_mac(value.lladdress.data(), buf, buf_len);

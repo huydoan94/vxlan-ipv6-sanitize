@@ -59,8 +59,7 @@ static bool get_bridge_master(const std::string& ifname, std::string& master)
 static bool find_ula_on_interface(const std::string& ifname,
                                   struct in6_addr *result)
 {
-	const std::vector<Tins::NetworkInterface::IPv6Prefix> addresses =
-		Tins::NetworkInterface(ifname).ipv6_addresses();
+	const std::vector<Tins::NetworkInterface::IPv6Prefix> addresses = Tins::NetworkInterface(ifname).ipv6_addresses();
 
 	for (const Tins::NetworkInterface::IPv6Prefix& prefix : addresses) {
 		if (!is_ula(prefix.address))
@@ -88,8 +87,7 @@ int resolve_local_dns(uint32_t indev, uint32_t physindev,
 			continue;
 
 		try {
-			std::string ifname =
-				Tins::NetworkInterface::from_index(ifindex).name();
+			std::string ifname = Tins::NetworkInterface::from_index(ifindex).name();
 			std::string resolved_ifname = ifname;
 			std::string master;
 
@@ -128,8 +126,7 @@ parse_nfqueue_ipv6_payload(uint8_t *payload, size_t payload_len,
 	uint16_t ipv6_payload_len;
 	size_t ipv6_packet_len;
 
-	if (payload == nullptr || view == nullptr ||
-	    payload_len < sizeof(struct ip6_hdr) || !has_ipv6_version(payload))
+	if (payload == nullptr || view == nullptr || payload_len < sizeof(struct ip6_hdr) || !has_ipv6_version(payload))
 		return IPV6_PACKET_PASSTHROUGH;
 
 	ipv6_payload_len = read_be16(payload + ipv6_payload_len_offset);
@@ -157,8 +154,7 @@ int ipv6_packet_remove(struct ipv6_packet_view *packet,
 
 	if (packet == nullptr || remove_start == nullptr || remove_len == 0)
 		return remove_len == 0 ? 0 : -1;
-	if (remove_start < packet->data + sizeof(struct ip6_hdr) ||
-	    remove_start > packet->declared_end)
+	if (remove_start < packet->data + sizeof(struct ip6_hdr) || remove_start > packet->declared_end)
 		return -1;
 	if (remove_len > (size_t)(packet->declared_end - remove_start))
 		return -1;

@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.25
+PKG_VERSION:=1.2.27
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -14,8 +14,7 @@ define Package/vxlan-ipv6-sanitize
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=VXLAN IPv6 RA/DHCPv6 sanitizer
-	DEPENDS:=+kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge \
-		+libnetfilter-queue +libtins
+	DEPENDS:=+kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge +libnetfilter-queue +libtins
 endef
 
 define Package/vxlan-ipv6-sanitize/description
@@ -30,12 +29,10 @@ define Package/vxlan-ipv6-sanitize/conffiles
 /etc/config/vxlan-ipv6-sanitize
 endef
 
-SANITIZE_SOURCES := helper.cpp logging.cpp packet_parser.cpp \
-	vxlan-ipv6-sanitize.cpp
+SANITIZE_SOURCES := helper.cpp logging.cpp packet_parser.cpp vxlan-ipv6-sanitize.cpp
 SANITIZE_WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow
 
-TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 \
-	-ffunction-sections -fdata-sections
+TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 -ffunction-sections -fdata-sections
 TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include
 TARGET_LDFLAGS += -Wl,--gc-sections
 

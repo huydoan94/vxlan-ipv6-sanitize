@@ -15,8 +15,7 @@ constexpr size_t CLIENT_ID_BUFSIZE = 384U;
 constexpr size_t DETAIL_BUFSIZE = 1536U;
 constexpr size_t ERROR_BUFSIZE = 256U;
 constexpr size_t ENDPOINT_BUFSIZE = 256U;
-constexpr size_t LOCAL_DNS_TEXT_BUFSIZE =
-	INET6_ADDRSTRLEN + IF_NAMESIZE + 3U;
+constexpr size_t LOCAL_DNS_TEXT_BUFSIZE = INET6_ADDRSTRLEN + IF_NAMESIZE + 3U;
 
 struct addr_list {
 	char buf[ADDR_LIST_BUFSIZE];
