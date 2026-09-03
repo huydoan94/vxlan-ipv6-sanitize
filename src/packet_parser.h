@@ -1,9 +1,10 @@
 #ifndef VXLAN_IPV6_SANITIZE_PACKET_PARSER_H
 #define VXLAN_IPV6_SANITIZE_PACKET_PARSER_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include <tins/pdu.h>
 
 enum ipv6_transport_result {
 	IPV6_TRANSPORT_FOUND = 0,
@@ -13,7 +14,7 @@ enum ipv6_transport_result {
 };
 
 struct ipv6_transport_view {
-	uint8_t protocol;
+	Tins::PDU::PDUType packet_type;
 	uint8_t *header;
 	size_t len;
 	bool fragmented;

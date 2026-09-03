@@ -8,7 +8,6 @@
 #include <netinet/udp.h>
 #include <poll.h>
 #include <signal.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,14 +37,10 @@ constexpr size_t NFQ_RECV_BUFSIZE = COPY_RANGE + NFQ_NETLINK_HEADROOM;
 constexpr uint16_t RA_NEUTRAL_ROUTER_LIFETIME = 0U;
 constexpr uint8_t ND_OPTION_PVD = 21U;
 
-constexpr uint16_t DHCPV6_SERVER_PORT = 547U;
-constexpr uint16_t DHCPV6_CLIENT_PORT = 546U;
-
 constexpr uint16_t CHECKSUM_INVALID_XOR = 0x0001U;
 
 struct rdnss_option_wire {
-	uint8_t type;
-	uint8_t length_units;
+	struct nd_opt_hdr header;
 	uint16_t reserved;
 	uint32_t lifetime;
 	uint8_t addresses[];
@@ -141,35 +136,6 @@ static int install_signal_handlers(void)
 		return -1;
 
 	return 0;
-}
-
-static Tins::PDU::PDUType
-detect_packet_type(const struct ipv6_transport_view *transport)
-{
-	if (transport->header == nullptr)
-		return Tins::PDU::UNKNOWN;
-
-	if (transport->protocol == IPPROTO_ICMPV6) {
-		if (transport->len >= sizeof(uint8_t) &&
-		    transport->header[0] == Tins::ICMPv6::ROUTER_ADVERT)
-			return Tins::PDU::ICMPv6;
-
-		return Tins::PDU::UNKNOWN;
-	}
-
-	if (transport->protocol == IPPROTO_UDP) {
-		const struct udphdr *udp;
-
-		if (transport->len < sizeof(*udp))
-			return Tins::PDU::UNKNOWN;
-
-		udp = (const struct udphdr *)transport->header;
-		if (ntohs(udp->source) == DHCPV6_SERVER_PORT &&
-		    ntohs(udp->dest) == DHCPV6_CLIENT_PORT)
-			return Tins::PDU::DHCPv6;
-	}
-
-	return Tins::PDU::UNKNOWN;
 }
 
 static enum checksum_state
@@ -272,7 +238,7 @@ sanitize_ra(struct ipv6_packet_view *packet,
 	option_compactor_init(&compactor, options);
 
 	while (compactor.read < options_end) {
-		struct nd_option_header_wire *header;
+		struct nd_opt_hdr *header;
 		uint8_t *opt = compactor.read;
 		size_t remaining = (size_t)(options_end - compactor.read);
 		size_t opt_len;
@@ -282,37 +248,37 @@ sanitize_ra(struct ipv6_packet_view *packet,
 			return SANITIZE_ERROR;
 		}
 
-		header = (struct nd_option_header_wire *)opt;
-		if (header->length_units == 0) {
+		header = (struct nd_opt_hdr *)opt;
+		if (header->nd_opt_len == 0) {
 			set_error(error, error_len, "zero-length RA option");
 			return SANITIZE_ERROR;
 		}
 
-		opt_len = (size_t)header->length_units * NDP_OPTION_LEN_UNIT_OCTETS;
+		opt_len = (size_t)header->nd_opt_len * NDP_OPTION_LEN_UNIT_OCTETS;
 		if (opt_len > remaining) {
 			set_error(error, error_len, "RA option overruns packet");
 			return SANITIZE_ERROR;
 		}
 
-		if (header->type == Tins::ICMPv6::RSA_SIGN) {
+		if (header->nd_opt_type == Tins::ICMPv6::RSA_SIGN) {
 			send_signed = true;
 			option_compactor_keep(&compactor, opt_len);
 			continue;
 		}
 
-		if (header->type == ND_OPTION_PVD) {
+		if (header->nd_opt_type == ND_OPTION_PVD) {
 			pvd_removed++;
 			option_compactor_skip(&compactor, opt_len);
 			continue;
 		}
 
-		if (header->type == Tins::ICMPv6::DNS_SEARCH_LIST) {
+		if (header->nd_opt_type == Tins::ICMPv6::DNS_SEARCH_LIST) {
 			dnssl_removed++;
 			option_compactor_skip(&compactor, opt_len);
 			continue;
 		}
 
-		if (header->type == Tins::ICMPv6::RECURSIVE_DNS_SERV) {
+		if (header->nd_opt_type == Tins::ICMPv6::RECURSIVE_DNS_SERV) {
 			const size_t fixed_len = sizeof(struct rdnss_option_wire);
 			const size_t single_dns_len =
 				fixed_len + sizeof(struct in6_addr);
@@ -343,7 +309,7 @@ sanitize_ra(struct ipv6_packet_view *packet,
 
 			rdnss_rewritten = memcmp(opt + fixed_len, local_dns,
 			                         sizeof(*local_dns)) != 0;
-			header->length_units =
+			header->nd_opt_len =
 				(uint8_t)(single_dns_len / NDP_OPTION_LEN_UNIT_OCTETS);
 			memcpy(opt + fixed_len, local_dns, sizeof(*local_dns));
 			option_compactor_keep_prefix(&compactor, single_dns_len,
@@ -626,7 +592,6 @@ static int packet_cb(struct nfq_q_handle *qh,
 	bool checksum_not_ready;
 	enum ipv6_packet_result ipv6_result;
 	enum ipv6_transport_result transport_result;
-	Tins::PDU::PDUType packet_type;
 	enum sanitize_result result;
 
 	ph = nfq_get_msg_packet_hdr(nfa);
@@ -668,8 +633,7 @@ static int packet_cb(struct nfq_q_handle *qh,
 		return drop_packet(qh, id);
 	}
 
-	packet_type = detect_packet_type(&transport);
-	if (packet_type == Tins::PDU::UNKNOWN)
+	if (transport.packet_type == Tins::PDU::UNKNOWN)
 		return accept_unchanged(qh, id);
 
 	if (ctx->verbose)
@@ -692,7 +656,7 @@ static int packet_cb(struct nfq_q_handle *qh,
 	skbinfo = nfq_get_skbinfo(nfa);
 	checksum_not_ready = (skbinfo & NFQA_SKB_CSUMNOTREADY) != 0U;
 
-	switch (packet_type) {
+	switch (transport.packet_type) {
 	case Tins::PDU::ICMPv6:
 		result = sanitize_ra(&ipv6, &transport, &local_dns,
 		                     checksum_not_ready,

@@ -75,11 +75,23 @@ interface or its bridge master.
 The daemon uses OpenWrt's `libtins` package for IPv6 protocol parsing, protocol
 constants, interface/address access, formatting, and checksum helpers. It only
 needs libtins' core library; libpcap support can be disabled in libtins
-configuration if it is not otherwise needed on the target.
+configuration if it is not otherwise needed on the target. The package declares
+libtins as both a build dependency and a runtime dependency so its headers and
+library are staged before the daemon is compiled.
 
 Add the package to your OpenWrt source tree, then run:
 
 ```sh
+make package/vxlan-ipv6-sanitize/compile V=s
+```
+
+If an earlier build failed with missing `tins/*.h` headers, rebuild the libtins
+staging files once before compiling this package again:
+
+```sh
+make package/feeds/packages/libtins/clean
+make package/feeds/packages/libtins/compile V=s
+make package/vxlan-ipv6-sanitize/clean
 make package/vxlan-ipv6-sanitize/compile V=s
 ```
 

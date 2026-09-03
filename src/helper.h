@@ -1,7 +1,6 @@
 #ifndef VXLAN_IPV6_SANITIZE_HELPERS_H
 #define VXLAN_IPV6_SANITIZE_HELPERS_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -10,11 +9,6 @@
 
 constexpr size_t DHCPV6_TRANSACTION_ID_LEN = 3U;
 constexpr size_t NDP_OPTION_LEN_UNIT_OCTETS = 8U;
-
-struct nd_option_header_wire {
-	uint8_t type;
-	uint8_t length_units;
-} __attribute__((packed));
 
 enum ipv6_packet_result {
 	IPV6_PACKET_OK = 0,

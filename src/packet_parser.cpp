@@ -2,11 +2,14 @@
 
 #include <limits>
 
-#include <netinet/in.h>
-
 #include <tins/exceptions.h>
+#include <tins/icmpv6.h>
 #include <tins/ipv6.h>
 #include <tins/pdu.h>
+#include <tins/udp.h>
+
+constexpr uint16_t DHCPV6_SERVER_PORT = 547U;
+constexpr uint16_t DHCPV6_CLIENT_PORT = 546U;
 
 namespace {
 
@@ -27,7 +30,7 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
 	    packet_len > std::numeric_limits<uint32_t>::max())
 		return IPV6_TRANSPORT_MALFORMED;
 
-	transport->protocol = 0;
+	transport->packet_type = Tins::PDU::UNKNOWN;
 	transport->header = nullptr;
 	transport->len = 0;
 	transport->fragmented = false;
@@ -72,12 +75,22 @@ parse_ipv6_transport(uint8_t *packet, size_t packet_len,
 			return IPV6_TRANSPORT_OTHER;
 
 		switch (inner->pdu_type()) {
-		case Tins::PDU::ICMPv6:
-			transport->protocol = IPPROTO_ICMPV6;
+		case Tins::PDU::ICMPv6: {
+			const Tins::ICMPv6 *icmpv6 =
+				static_cast<const Tins::ICMPv6 *>(inner);
+
+			if (icmpv6->type() == Tins::ICMPv6::ROUTER_ADVERT)
+				transport->packet_type = Tins::PDU::ICMPv6;
 			break;
-		case Tins::PDU::UDP:
-			transport->protocol = IPPROTO_UDP;
+		}
+		case Tins::PDU::UDP: {
+			const Tins::UDP *udp = static_cast<const Tins::UDP *>(inner);
+
+			if (udp->sport() == DHCPV6_SERVER_PORT &&
+			    udp->dport() == DHCPV6_CLIENT_PORT)
+				transport->packet_type = Tins::PDU::DHCPv6;
 			break;
+		}
 		case Tins::PDU::IPSEC_AH:
 		case Tins::PDU::IPSEC_ESP:
 			return IPV6_TRANSPORT_UNSUPPORTED;

@@ -1,11 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.2.23
+PKG_VERSION:=1.2.25
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
+PKG_BUILD_DEPENDS:=libtins
 
 include $(INCLUDE_DIR)/package.mk
 

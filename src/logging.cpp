@@ -3,33 +3,19 @@
 #include "helper.h"
 
 #include <limits.h>
+#include <net/if_arp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <string>
 
+#include <tins/dhcpv6.h>
 #include <tins/hw_address.h>
 #include <tins/ipv6_address.h>
 
-constexpr uint16_t DUID_LLT = 1U;
-constexpr uint16_t DUID_LL = 3U;
-constexpr uint16_t HWTYPE_ETHERNET = 1U;
 constexpr size_t DESTINATION_TEXT_BUFSIZE =
 	INET6_ADDRSTRLEN + sizeof("(all-dhcp-agents)");
-
-struct duid_llt_ethernet_wire {
-	uint16_t type;
-	uint16_t hardware_type;
-	uint32_t time;
-	uint8_t mac[ETH_ALEN];
-} __attribute__((packed));
-
-struct duid_ll_ethernet_wire {
-	uint16_t type;
-	uint16_t hardware_type;
-	uint8_t mac[ETH_ALEN];
-} __attribute__((packed));
 
 void log_info(const char *fmt, ...)
 {
@@ -216,30 +202,35 @@ static void format_hex(const uint8_t *data, size_t data_len,
 static void duid_ethernet_mac(const uint8_t *duid, size_t len,
                               char *buf, size_t buf_len)
 {
-	const uint8_t *mac = nullptr;
 	uint16_t duid_type;
-	uint16_t hw_type;
 
 	if (buf_len == 0)
 		return;
 	buf[0] = '\0';
 
-	if (len < offsetof(struct duid_ll_ethernet_wire, mac))
+	if (len < sizeof(uint16_t))
 		return;
 
-	duid_type = read_be16(duid + offsetof(struct duid_ll_ethernet_wire, type));
-	hw_type = read_be16(duid +
-	                    offsetof(struct duid_ll_ethernet_wire, hardware_type));
-	if (hw_type != HWTYPE_ETHERNET)
-		return;
+	duid_type = read_be16(duid);
+	if (duid_type == Tins::DHCPv6::duid_llt::duid_id &&
+	    len == sizeof(uint16_t) * 2U + sizeof(uint32_t) + ETH_ALEN) {
+		const Tins::DHCPv6::duid_llt value =
+			Tins::DHCPv6::duid_llt::from_bytes(
+				duid + sizeof(uint16_t),
+				static_cast<uint32_t>(len - sizeof(uint16_t)));
 
-	if (duid_type == DUID_LLT && len == sizeof(struct duid_llt_ethernet_wire))
-		mac = duid + offsetof(struct duid_llt_ethernet_wire, mac);
-	else if (duid_type == DUID_LL && len == sizeof(struct duid_ll_ethernet_wire))
-		mac = duid + offsetof(struct duid_ll_ethernet_wire, mac);
+		if (value.hw_type == ARPHRD_ETHER)
+			format_mac(value.lladdress.data(), buf, buf_len);
+	} else if (duid_type == Tins::DHCPv6::duid_ll::duid_id &&
+	           len == sizeof(uint16_t) * 2U + ETH_ALEN) {
+		const Tins::DHCPv6::duid_ll value =
+			Tins::DHCPv6::duid_ll::from_bytes(
+				duid + sizeof(uint16_t),
+				static_cast<uint32_t>(len - sizeof(uint16_t)));
 
-	if (mac != nullptr)
-		format_mac(mac, buf, buf_len);
+		if (value.hw_type == ARPHRD_ETHER)
+			format_mac(value.lladdress.data(), buf, buf_len);
+	}
 }
 
 void format_dhcpv6_client_log_fields(const uint8_t *duid, size_t len,

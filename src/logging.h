@@ -1,7 +1,6 @@
 #ifndef VXLAN_IPV6_SANITIZE_LOGGING_H
 #define VXLAN_IPV6_SANITIZE_LOGGING_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
