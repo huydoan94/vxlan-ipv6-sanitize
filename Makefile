@@ -6,15 +6,13 @@ PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
-PKG_BUILD_DEPENDS:=libtins
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/vxlan-ipv6-sanitize
 	SECTION:=net
 	CATEGORY:=Network
 	TITLE:=VXLAN IPv6 RA/DHCPv6 sanitizer
-	DEPENDS:=+kmod-nfnetlink-queue +kmod-nft-queue +kmod-nft-bridge +libnetfilter-queue +libtins
+	DEPENDS:=+kmod-nft-queue +libnetfilter-queue +libtins
 endef
 
 define Package/vxlan-ipv6-sanitize/description
