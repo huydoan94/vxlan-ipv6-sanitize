@@ -184,7 +184,10 @@ static void format_hex(const uint8_t *data, size_t data_len,
 		return;
 
 	for (i = 0; i < data_len; i++) {
-		if (buf_len - out <= sizeof("ff") - 1U)
+		const size_t required = sizeof("ff") +
+			(i + 1U < data_len ? sizeof(ellipsis) - 1U : 0U);
+
+		if (required > buf_len - out)
 			break;
 		buf[out++] = hex[data[i] >> nibble_bits];
 		buf[out++] = hex[data[i] & low_nibble_mask];
