@@ -76,8 +76,9 @@ The daemon uses OpenWrt's `libtins` package for IPv6 protocol parsing, protocol
 constants, interface/address access, formatting, and checksum helpers. It only
 needs libtins' core library; libpcap support can be disabled in libtins
 configuration if it is not otherwise needed on the target. The package declares
-libtins as a runtime dependency, which also stages its headers and library before
-the daemon is compiled.
+`libnetfilter-queue` and `libtins` as explicit build dependencies so their
+headers and libraries are built and staged before the daemon is compiled. They
+also remain runtime dependencies of the installed daemon.
 
 The package's direct dependencies are `kmod-nft-queue`, `libnetfilter-queue`,
 and `libtins`. `kmod-nft-queue` selects `kmod-nfnetlink-queue` transitively. The
