@@ -1492,6 +1492,57 @@ int run_daemon(std::vector<std::string> arguments)
 	return vxlan_ipv6_sanitize_daemon_main(static_cast<int>(arguments.size()), argv.data());
 }
 
+std::string capture_daemon_stdout(
+	std::vector<std::string> arguments,
+	int& status)
+{
+	std::string output;
+	char buffer[256];
+
+	fflush(stdout);
+	FILE *capture = tmpfile();
+	EXPECT(capture != nullptr);
+	if (capture == nullptr)
+		return output;
+
+	const int saved_stdout = dup(STDOUT_FILENO);
+	EXPECT(saved_stdout >= 0);
+	if (saved_stdout < 0) {
+		fclose(capture);
+		return output;
+	}
+
+	EXPECT(dup2(fileno(capture), STDOUT_FILENO) >= 0);
+	status = run_daemon(arguments);
+	fflush(stdout);
+	EXPECT(dup2(saved_stdout, STDOUT_FILENO) >= 0);
+	close(saved_stdout);
+
+	EXPECT(fseek(capture, 0, SEEK_SET) == 0);
+	while (fgets(buffer, sizeof(buffer), capture) != nullptr)
+		output += buffer;
+	fclose(capture);
+	return output;
+}
+
+void test_startup_logging()
+{
+	reset_stubs();
+	running = 0;
+	int status = EXIT_FAILURE;
+	const std::string output = capture_daemon_stdout(
+		{ "daemon" },
+		status);
+
+	EXPECT(status == EXIT_SUCCESS);
+	expect_text_contains(output.c_str(),
+	                     "starting version " VXLAN_IPV6_SANITIZE_VERSION "\n");
+	expect_text_contains(output.c_str(), "listening on NFQUEUE 100\n");
+	expect_text_contains(output.c_str(), "stopping\n");
+	expect_text_contains(output.c_str(), "exiting\n");
+	EXPECT(output.find("vxlan-ipv6-sanitize:") == std::string::npos);
+}
+
 void test_signal_and_cli_paths()
 {
 	reset_stubs();
@@ -1599,6 +1650,7 @@ int main()
 	run_test("callback envelope policy", test_callback_envelope_policy);
 	run_test("callback transport policy", test_callback_transport_policy);
 	run_test("callback sanitizer results", test_callback_sanitizer_results);
+	run_test("startup logging", test_startup_logging);
 	run_test("signal and CLI paths", test_signal_and_cli_paths);
 	run_test("daemon setup failures", test_daemon_setup_failures);
 	run_test("daemon poll and receive paths", test_daemon_poll_and_receive_paths);

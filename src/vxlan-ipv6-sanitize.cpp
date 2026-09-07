@@ -27,6 +27,12 @@
 #include "logging.h"
 #include "packet_parser.h"
 
+#ifndef VXLAN_IPV6_SANITIZE_VERSION
+#define VXLAN_IPV6_SANITIZE_VERSION "unknown"
+#endif
+
+constexpr char PROGRAM_VERSION[] = VXLAN_IPV6_SANITIZE_VERSION;
+
 constexpr uint16_t QUEUE_NUM = 100U;
 constexpr uint32_t QUEUE_MAXLEN = 1024U;
 constexpr uint32_t COPY_RANGE = UINT16_MAX;
@@ -722,7 +728,7 @@ int main(int argc, char **argv)
 	setvbuf(stdout, nullptr, _IOLBF, 0);
 	setvbuf(stderr, nullptr, _IONBF, 0);
 
-	log_info("vxlan-ipv6-sanitize: starting");
+	log_info("starting version %s", PROGRAM_VERSION);
 
 	if (install_signal_handlers() < 0) {
 		log_error("failed to install signal handlers: %s", strerror(errno));
@@ -771,7 +777,7 @@ int main(int argc, char **argv)
 	pfd.events = POLLIN;
 	pfd.revents = 0;
 
-	log_info("vxlan-ipv6-sanitize: listening on NFQUEUE %u", QUEUE_NUM);
+	log_info("listening on NFQUEUE %u", QUEUE_NUM);
 
 	while (running) {
 		rv = poll(&pfd, 1, POLL_TIMEOUT_MS);
@@ -817,7 +823,7 @@ int main(int argc, char **argv)
 		break;
 	}
 
-	log_info("vxlan-ipv6-sanitize: stopping");
+	log_info("stopping");
 
 out_queue:
 	if (qh != nullptr)
@@ -826,6 +832,6 @@ out_nfq:
 	if (h != nullptr)
 		nfq_close(h);
 out:
-	log_info("vxlan-ipv6-sanitize: exiting");
+	log_info("exiting");
 	return exit_status;
 }

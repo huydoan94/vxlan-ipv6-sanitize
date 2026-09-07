@@ -175,6 +175,10 @@ uci commit vxlan-ipv6-sanitize
 logread -f -e vxlan-ipv6-sanitize
 ```
 
+At startup, the daemon reports its packaged version. The message text omits the
+redundant `vxlan-ipv6-sanitize:` prefix because procd already identifies the
+process in the system log.
+
 ## Formatting
 
 The included `.clang-format` keeps tab indentation and Linux-style braces while

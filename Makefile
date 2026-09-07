@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=vxlan-ipv6-sanitize
-PKG_VERSION:=1.5
+PKG_VERSION:=1.6
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -33,7 +33,7 @@ SANITIZE_SOURCES := helper.cpp logging.cpp packet_parser.cpp vxlan-ipv6-sanitize
 SANITIZE_WARNINGS := -Wall -Wextra -Wformat=2 -Wshadow
 
 TARGET_CXXFLAGS += -Os $(SANITIZE_WARNINGS) -std=gnu++11 -ffunction-sections -fdata-sections
-TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include
+TARGET_CPPFLAGS += -isystem $(STAGING_DIR)/usr/include -DVXLAN_IPV6_SANITIZE_VERSION=\"$(PKG_VERSION)\"
 TARGET_LDFLAGS += -Wl,--gc-sections
 
 define Build/Prepare

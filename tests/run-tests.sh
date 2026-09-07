@@ -17,6 +17,14 @@ NFQUEUE_INCLUDE_DIR=${NFQUEUE_INCLUDE_DIR:-/usr/include}
 NFNETLINK_INCLUDE_DIR=${NFNETLINK_INCLUDE_DIR:-$NFQUEUE_INCLUDE_DIR}
 COVERAGE=${COVERAGE:-0}
 SANITIZERS=${SANITIZERS:-0}
+PROGRAM_VERSION=$(sed -n 's/^PKG_VERSION:=//p' "$PROJECT_DIR/Makefile")
+
+if [ -z "$PROGRAM_VERSION" ]; then
+	echo "PKG_VERSION not found in $PROJECT_DIR/Makefile" >&2
+	exit 1
+fi
+
+VERSION_CPPFLAG="-DVXLAN_IPV6_SANITIZE_VERSION=\"$PROGRAM_VERSION\""
 
 if [ ! -f "$LIBTINS_PREFIX/include/tins/constants.h" ]; then
 	echo "libtins development headers not found under $LIBTINS_PREFIX/include" >&2
@@ -77,6 +85,7 @@ fi
 
 "$CXX" \
 	$CXXFLAGS \
+	"$VERSION_CPPFLAG" \
 	-I"$PROJECT_DIR/src" \
 	"$@" \
 	-o "$BUILD_DIR/unit-tests" \
