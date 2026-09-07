@@ -90,6 +90,12 @@ Add the package to your OpenWrt source tree, then run:
 make package/vxlan-ipv6-sanitize/compile V=s
 ```
 
+## Tests
+
+The host-side unit suite exercises protocol validation, RA and DHCPv6 rewrite
+policy, checksums, logging, NFQUEUE verdict handling, and daemon failure paths.
+See `tests/README.md` for normal and branch-coverage commands.
+
 If an earlier build failed with missing `tins/*.h` headers, rebuild the libtins
 staging files once before compiling this package again:
 
