@@ -6,13 +6,7 @@ TEST_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$TEST_DIR/.." && pwd)
 BUILD_DIR=${BUILD_DIR:-"$TEST_DIR/build"}
 CXX=${CXX:-g++}
-LOCAL_LIBTINS_PREFIX="$TEST_DIR/build/libtins-host"
-if [ -f "$LOCAL_LIBTINS_PREFIX/include/tins/ipv6.h" ]; then
-	DEFAULT_LIBTINS_PREFIX=$LOCAL_LIBTINS_PREFIX
-else
-	DEFAULT_LIBTINS_PREFIX=/usr
-fi
-LIBTINS_PREFIX=${LIBTINS_PREFIX:-$DEFAULT_LIBTINS_PREFIX}
+LOCAL_LIBTINS_PREFIX=${HOST_LIBTINS_PREFIX:-"$TEST_DIR/build/libtins-host"}
 NFQUEUE_INCLUDE_DIR=${NFQUEUE_INCLUDE_DIR:-/usr/include}
 NFNETLINK_INCLUDE_DIR=${NFNETLINK_INCLUDE_DIR:-$NFQUEUE_INCLUDE_DIR}
 COVERAGE=${COVERAGE:-0}
@@ -26,16 +20,36 @@ fi
 
 VERSION_CPPFLAG="-DVXLAN_IPV6_SANITIZE_VERSION=\"$PROGRAM_VERSION\""
 
+libtins_has_required_api()
+{
+	prefix=$1
+	[ -f "$prefix/include/tins/constants.h" ] &&
+		grep -q "struct fragment_header" "$prefix/include/tins/ipv6.h" 2>/dev/null &&
+		grep -q "class invalid_ipv6_extension_header" "$prefix/include/tins/exceptions.h" 2>/dev/null
+}
+
+if [ -z "${LIBTINS_PREFIX+x}" ]; then
+	if libtins_has_required_api "$LOCAL_LIBTINS_PREFIX"; then
+		LIBTINS_PREFIX=$LOCAL_LIBTINS_PREFIX
+	elif libtins_has_required_api /usr; then
+		LIBTINS_PREFIX=/usr
+	else
+		echo "A compatible native libtins was not found; building it now..." >&2
+		sh "$TEST_DIR/build-host-libtins.sh"
+		LIBTINS_PREFIX=$LOCAL_LIBTINS_PREFIX
+	fi
+fi
+
 if [ ! -f "$LIBTINS_PREFIX/include/tins/constants.h" ]; then
 	echo "libtins development headers not found under $LIBTINS_PREFIX/include" >&2
-	echo "Build a native copy of OpenWrt's libtins: sh ./tests/build-host-libtins.sh" >&2
+	echo "Unset LIBTINS_PREFIX to let the runner build a native copy automatically." >&2
 	exit 1
 fi
 
 if ! grep -q "struct fragment_header" "$LIBTINS_PREFIX/include/tins/ipv6.h" ||
 	! grep -q "class invalid_ipv6_extension_header" "$LIBTINS_PREFIX/include/tins/exceptions.h"; then
 	echo "The host libtins under $LIBTINS_PREFIX is older than the production libtins API." >&2
-	echo "Build a matching native copy: sh ./tests/build-host-libtins.sh" >&2
+	echo "Unset LIBTINS_PREFIX to let the runner build a matching native copy automatically." >&2
 	exit 1
 fi
 

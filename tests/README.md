@@ -33,12 +33,12 @@ sudo apt install build-essential cmake libnetfilter-queue-dev libnfnetlink-dev
 ```
 
 Ubuntu's libtins package can be older than the API used by the production
-OpenWrt package. Prepare the OpenWrt source if it is not already in `build_dir`,
-then build a native copy from exactly that source:
+OpenWrt package. When no compatible native libtins is available, the test runner
+automatically prepares the OpenWrt package and builds a native copy from exactly
+that source under `tests/build/libtins-host`:
 
 ```sh
-make package/feeds/packages/libtins/prepare V=s
-sh package/vxlan-ipv6-sanitize/tests/build-host-libtins.sh
+./tests/run-tests.sh
 ```
 
 The native build disables packet capture, 802.11, examples, and libtins' own

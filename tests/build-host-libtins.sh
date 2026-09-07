@@ -10,29 +10,49 @@ HOST_LIBTINS_BUILD_DIR=${HOST_LIBTINS_BUILD_DIR:-"$TEST_DIR/build/libtins-build"
 DEFAULT_HOST_LIBTINS_PREFIX="$TEST_DIR/build/libtins-host"
 HOST_LIBTINS_PREFIX=${HOST_LIBTINS_PREFIX:-$DEFAULT_HOST_LIBTINS_PREFIX}
 CMAKE=${CMAKE:-cmake}
+MAKE=${MAKE:-make}
+
+find_libtins_source()
+{
+	find "$OPENWRT_ROOT/build_dir" \
+		-type f \
+		-path '*/include/tins/ipv6.h' \
+		-print 2>/dev/null |
+	while IFS= read -r ipv6_header; do
+		candidate=${ipv6_header%/include/tins/ipv6.h}
+		if [ -f "$candidate/CMakeLists.txt" ] &&
+			grep -q "struct fragment_header" "$ipv6_header" 2>/dev/null &&
+			grep -q "class invalid_ipv6_extension_header" "$candidate/include/tins/exceptions.h" 2>/dev/null; then
+			CDPATH= cd -- "$candidate"
+			pwd -P
+			break
+		fi
+	done
+}
 
 if [ -z "$LIBTINS_SOURCE_DIR" ]; then
-	LIBTINS_SOURCE_DIR=$(
-		find "$OPENWRT_ROOT/build_dir" \
-			-type f \
-			-path '*/libtins-*/CMakeLists.txt' \
-			-print 2>/dev/null |
-		while IFS= read -r cmake_file; do
-			candidate=${cmake_file%/CMakeLists.txt}
-			if grep -q "struct fragment_header" "$candidate/include/tins/ipv6.h" 2>/dev/null &&
-				grep -q "class invalid_ipv6_extension_header" "$candidate/include/tins/exceptions.h" 2>/dev/null; then
-				CDPATH= cd -- "$candidate"
-				pwd -P
-				break
-			fi
-		done
-	)
+	LIBTINS_SOURCE_DIR=$(find_libtins_source)
+fi
+
+if [ -z "$LIBTINS_SOURCE_DIR" ]; then
+	echo "Preparing OpenWrt's libtins source for the native test build..." >&2
+	if ! "$MAKE" \
+		-C "$OPENWRT_ROOT" \
+		package/feeds/packages/libtins/prepare \
+		V=s; then
+		echo "Could not prepare OpenWrt's libtins package." >&2
+		echo "Make sure its feed recipe is installed:" >&2
+		echo "  ./scripts/feeds install libtins" >&2
+		exit 1
+	fi
+
+	LIBTINS_SOURCE_DIR=$(find_libtins_source)
 fi
 
 if [ -z "$LIBTINS_SOURCE_DIR" ] || [ ! -f "$LIBTINS_SOURCE_DIR/CMakeLists.txt" ]; then
 	echo "OpenWrt's extracted libtins source with the required API was not found." >&2
-	echo "Prepare it from the OpenWrt root, then retry:" >&2
-	echo "  make package/feeds/packages/libtins/prepare V=s" >&2
+	echo "Look for the extracted header with:" >&2
+	echo "  find build_dir -path '*/include/tins/ipv6.h' -print" >&2
 	exit 1
 fi
 
